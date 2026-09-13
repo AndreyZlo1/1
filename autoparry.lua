@@ -4470,16 +4470,53 @@ function genv._DGAP.buildUI(ctx)
 	disc(apBase, "Blatant = always. SemiLegit = mixed. Legit = human rolls.")
 
 	apBase:Divider()
-	apBase:Header({ Name = "Parry" })
-	enable(apBase, "DG_AutoParry", function()
+	apBase:Header({ Name = "Priority" })
+	disc(apBase, "If several options fit, higher slot wins.")
+	local priOpts = { "Heavy", "Light", "Dodge+Attack", "Parry", "Jump" }
+	els.DG_Priority1 = apBase:Dropdown({
+		Name = "1st",
+		Options = priOpts,
+		Default = Config.Priority1 or "Heavy",
+		Callback = function(v)
+			Config.Priority1 = v
+		end,
+	}, ctx.flag("DG_Priority1"))
+	els.DG_Priority2 = apBase:Dropdown({
+		Name = "2nd",
+		Options = priOpts,
+		Default = Config.Priority2 or "Light",
+		Callback = function(v)
+			Config.Priority2 = v
+		end,
+	}, ctx.flag("DG_Priority2"))
+	els.DG_Priority3 = apBase:Dropdown({
+		Name = "3rd",
+		Options = priOpts,
+		Default = Config.Priority3 or "Dodge+Attack",
+		Callback = function(v)
+			Config.Priority3 = v
+		end,
+	}, ctx.flag("DG_Priority3"))
+	els.DG_Priority4 = apBase:Dropdown({
+		Name = "4th",
+		Options = priOpts,
+		Default = Config.Priority4 or "Parry",
+		Callback = function(v)
+			Config.Priority4 = v
+		end,
+	}, ctx.flag("DG_Priority4"))
+
+	local apParry = AutoParry:Section({ Side = "Left" })
+	apParry:Header({ Name = "Parry" })
+	enable(apParry, "DG_AutoParry", function()
 		return Config.AutoParry
 	end, function(v)
 		Config.AutoParry = v
 	end, "Parry incoming hits.")
 
-	apBase:Divider()
-	apBase:Header({ Name = "Auto Dodge" })
-	enable(apBase, "DG_AutoDodge", function()
+	local apDodge = AutoParry:Section({ Side = "Left" })
+	apDodge:Header({ Name = "Auto Dodge" })
+	enable(apDodge, "DG_AutoDodge", function()
 		return Config.AutoDodge
 	end, function(v)
 		Config.AutoDodge = v
@@ -4556,7 +4593,7 @@ function genv._DGAP.buildUI(ctx)
 			Config.HumanDelayMax = v
 		end,
 	})
-	enable(apDelay, "DG_NoRepeat", function()
+	boolToggle(apDelay, "No Repeat", "DG_NoRepeat", function()
 		return Config.NoRepeat
 	end, function(v)
 		Config.NoRepeat = v
@@ -4564,40 +4601,6 @@ function genv._DGAP.buildUI(ctx)
 
 	local apPlay = AutoParry:Section({ Side = "Right" })
 	apPlay:Header({ Name = "AutoPlay" })
-	disc(apPlay, "If several options fit, higher slot wins.")
-	local priOpts = { "Heavy", "Light", "Dodge+Attack", "Parry", "Jump" }
-	els.DG_Priority1 = apPlay:Dropdown({
-		Name = "1st",
-		Options = priOpts,
-		Default = Config.Priority1 or "Heavy",
-		Callback = function(v)
-			Config.Priority1 = v
-		end,
-	}, ctx.flag("DG_Priority1"))
-	els.DG_Priority2 = apPlay:Dropdown({
-		Name = "2nd",
-		Options = priOpts,
-		Default = Config.Priority2 or "Light",
-		Callback = function(v)
-			Config.Priority2 = v
-		end,
-	}, ctx.flag("DG_Priority2"))
-	els.DG_Priority3 = apPlay:Dropdown({
-		Name = "3rd",
-		Options = priOpts,
-		Default = Config.Priority3 or "Dodge+Attack",
-		Callback = function(v)
-			Config.Priority3 = v
-		end,
-	}, ctx.flag("DG_Priority3"))
-	els.DG_Priority4 = apPlay:Dropdown({
-		Name = "4th",
-		Options = priOpts,
-		Default = Config.Priority4 or "Parry",
-		Callback = function(v)
-			Config.Priority4 = v
-		end,
-	}, ctx.flag("DG_Priority4"))
 	enable(apPlay, "DG_SmartInterrupt", function()
 		return Config.SmartInterrupt
 	end, function(v)
@@ -4879,9 +4882,9 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		})
 
-		local atR = Attack:Section({ Side = "Right" })
-		atR:Header({ Name = "No Delay" })
-		feature(atR, {
+		local atDelay = Attack:Section({ Side = "Right" })
+		atDelay:Header({ Name = "No Delay" })
+		feature(atDelay, {
 			Title = "No Delay",
 			Flag = "DG_NoDelay",
 			Desc = "Starts attacks faster on the client.",
@@ -4893,7 +4896,7 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		})
 
-		atR:Divider()
+		local atR = Attack:Section({ Side = "Right" })
 		atR:Header({ Name = "Custom Combo" })
 		enable(atR, "DG_CustomCombo", function()
 			return Config.CustomCombo
@@ -4989,9 +4992,9 @@ function genv._DGAP.buildUI(ctx)
 
 	-- ════════════════════════════════ Movement ═════════════════════════════
 	if Movement then
-		local mvL = Movement:Section({ Side = "Left" })
-		mvL:Header({ Name = "Speed" })
-		feature(mvL, {
+		local mvSpeed = Movement:Section({ Side = "Left" })
+		mvSpeed:Header({ Name = "Speed" })
+		feature(mvSpeed, {
 			Title = "Speed",
 			Flag = "DG_Speed",
 			Desc = "Moves you faster.",
@@ -5002,7 +5005,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.Speed = v
 			end,
 		})
-		slider(mvL, {
+		slider(mvSpeed, {
 			Name = "Speed",
 			Flag = "DG_SpeedValue",
 			Default = Config.SpeedValue,
@@ -5014,9 +5017,9 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		})
 
-		mvL:Divider()
-		mvL:Header({ Name = "NoClip" })
-		feature(mvL, {
+		local mvClip = Movement:Section({ Side = "Left" })
+		mvClip:Header({ Name = "NoClip" })
+		feature(mvClip, {
 			Title = "NoClip",
 			Flag = "DG_NoClip",
 			Desc = "Walk through walls.",
@@ -5028,9 +5031,9 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		})
 
-		mvL:Divider()
-		mvL:Header({ Name = "No Slowdown" })
-		feature(mvL, {
+		local mvSlow = Movement:Section({ Side = "Left" })
+		mvSlow:Header({ Name = "No Slowdown" })
+		feature(mvSlow, {
 			Title = "No Slowdown",
 			Flag = "DG_NoSlowdown",
 			Desc = "No slow from hits or actions.",
@@ -5042,9 +5045,9 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		})
 
-		local mvR = Movement:Section({ Side = "Right" })
-		mvR:Header({ Name = "No Stun" })
-		feature(mvR, {
+		local mvStun = Movement:Section({ Side = "Right" })
+		mvStun:Header({ Name = "No Stun" })
+		feature(mvStun, {
 			Title = "No Stun",
 			Flag = "DG_NoStun",
 			Desc = "Ignore stagger.",
@@ -5056,9 +5059,9 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		})
 
-		mvR:Divider()
-		mvR:Header({ Name = "God Mode" })
-		feature(mvR, {
+		local mvGod = Movement:Section({ Side = "Right" })
+		mvGod:Header({ Name = "God Mode" })
+		feature(mvGod, {
 			Title = "God Mode",
 			Flag = "DG_GodMode",
 			Desc = "Always dodge iframe.",
@@ -5070,9 +5073,9 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		})
 
-		mvR:Divider()
-		mvR:Header({ Name = "Dodge" })
-		slider(mvR, {
+		local mvDodge = Movement:Section({ Side = "Right" })
+		mvDodge:Header({ Name = "Dodge" })
+		slider(mvDodge, {
 			Name = "Dodge Speed",
 			Flag = "DG_DodgeSpeed",
 			Default = Config.DodgeSpeed,
@@ -5084,7 +5087,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.DodgeSpeed = v
 			end,
 		})
-		slider(mvR, {
+		slider(mvDodge, {
 			Name = "Dodge Cooldown",
 			Flag = "DG_DodgeCooldown",
 			Default = Config.DodgeCooldown,
@@ -5165,9 +5168,9 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		}, ctx.flag("DG_EspColorB"))
 
-		vsL:Divider()
-		vsL:Header({ Name = "Hitbox" })
-		feature(vsL, {
+		local vsHit = Visuals:Section({ Side = "Left" })
+		vsHit:Header({ Name = "Hitbox" })
+		feature(vsHit, {
 			Title = "Hitbox",
 			Flag = "DG_Hitbox",
 			Desc = "Shows their attack box.",
@@ -5178,7 +5181,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.Hitbox = v
 			end,
 		})
-		vsL:Dropdown({
+		vsHit:Dropdown({
 			Name = "Physics",
 			Options = { "UseAnother", "AddAnother", "Floor", "Scatter" },
 			Default = Config.HitboxPhysics,
@@ -5186,8 +5189,8 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitboxPhysics = v
 			end,
 		}, ctx.flag("DG_HitboxPhysics"))
-		disc(vsL, "Scatter = air shards. Floor = drop to ground.")
-		slider(vsL, {
+		disc(vsHit, "Scatter = air shards. Floor = drop to ground.")
+		slider(vsHit, {
 			Name = "Anim Speed",
 			Flag = "DG_HitboxAnimSpeed",
 			Default = Config.HitboxAnimSpeed,
@@ -5198,7 +5201,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitboxAnimSpeed = v
 			end,
 		})
-		slider(vsL, {
+		slider(vsHit, {
 			Name = "Fall Speed",
 			Flag = "DG_HitboxFallSpeed",
 			Default = Config.HitboxFallSpeed,
@@ -5210,7 +5213,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitboxFallSpeed = v
 			end,
 		})
-		vsL:Colorpicker({
+		vsHit:Colorpicker({
 			Name = "Gradient A",
 			Default = Config.HitboxColorA,
 			Callback = function(c)
@@ -5219,7 +5222,7 @@ function genv._DGAP.buildUI(ctx)
 				end
 			end,
 		}, ctx.flag("DG_HitboxColorA"))
-		vsL:Colorpicker({
+		vsHit:Colorpicker({
 			Name = "Gradient B",
 			Default = Config.HitboxColorB,
 			Callback = function(c)
@@ -5229,9 +5232,9 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		}, ctx.flag("DG_HitboxColorB"))
 
-		vsL:Divider()
-		vsL:Header({ Name = "Attack Trails" })
-		feature(vsL, {
+		local vsTrail = Visuals:Section({ Side = "Left" })
+		vsTrail:Header({ Name = "Attack Trails" })
+		feature(vsTrail, {
 			Title = "Attack Trails",
 			Flag = "DG_AttackTrails",
 			Desc = "Recolors your weapon swing trails.",
@@ -5242,7 +5245,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.AttackTrails = v
 			end,
 		})
-		vsL:Colorpicker({
+		vsTrail:Colorpicker({
 			Name = "Trail A",
 			Default = Config.TrailColorA,
 			Callback = function(c)
@@ -5251,7 +5254,7 @@ function genv._DGAP.buildUI(ctx)
 				end
 			end,
 		}, ctx.flag("DG_TrailColorA"))
-		vsL:Colorpicker({
+		vsTrail:Colorpicker({
 			Name = "Trail B",
 			Default = Config.TrailColorB,
 			Callback = function(c)
@@ -5316,9 +5319,9 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		}, ctx.flag("DG_CMOut"))
 
-		vsR:Divider()
-		vsR:Header({ Name = "Hit Ring" })
-		feature(vsR, {
+		local vsRing = Visuals:Section({ Side = "Right" })
+		vsRing:Header({ Name = "Hit Ring" })
+		feature(vsRing, {
 			Title = "Hit Ring",
 			Flag = "DG_HitRing",
 			Desc = "Ring on a confirmed hit.",
@@ -5329,7 +5332,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitRing = v
 			end,
 		})
-		slider(vsR, {
+		slider(vsRing, {
 			Name = "Life",
 			Flag = "DG_HitRingLife",
 			Default = Config.HitRingLife,
@@ -5341,7 +5344,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitRingLife = v
 			end,
 		})
-		slider(vsR, {
+		slider(vsRing, {
 			Name = "Start Radius",
 			Flag = "DG_HitRingR0",
 			Default = Config.HitRingR0,
@@ -5352,7 +5355,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitRingR0 = v
 			end,
 		})
-		slider(vsR, {
+		slider(vsRing, {
 			Name = "End Radius",
 			Flag = "DG_HitRingR1",
 			Default = Config.HitRingR1,
@@ -5363,7 +5366,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitRingR1 = v
 			end,
 		})
-		slider(vsR, {
+		slider(vsRing, {
 			Name = "Thickness",
 			Flag = "DG_HitRingThick",
 			Default = Config.HitRingThick,
@@ -5374,7 +5377,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitRingThick = v
 			end,
 		})
-		vsR:Colorpicker({
+		vsRing:Colorpicker({
 			Name = "Ring A",
 			Default = Config.HitRingColorA,
 			Callback = function(c)
@@ -5383,7 +5386,7 @@ function genv._DGAP.buildUI(ctx)
 				end
 			end,
 		}, ctx.flag("DG_HitRingColorA"))
-		vsR:Colorpicker({
+		vsRing:Colorpicker({
 			Name = "Ring B",
 			Default = Config.HitRingColorB,
 			Callback = function(c)
@@ -5431,9 +5434,9 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		})
 
-		vsS:Divider()
-		vsS:Header({ Name = "Parry Sound" })
-		feature(vsS, {
+		local vsParry = Visuals:Section({ Side = "Right" })
+		vsParry:Header({ Name = "Parry Sound" })
+		feature(vsParry, {
 			Title = "Parry Sound",
 			Flag = "DG_ParrySound",
 			get = function()
@@ -5443,7 +5446,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.ParrySound = v
 			end,
 		})
-		vsS:Dropdown({
+		vsParry:Dropdown({
 			Name = "Preset",
 			Options = { "Fatality", "Click", "Bell", "Neverlose", "SuccessFX" },
 			Default = Config.ParrySoundPreset,
@@ -5451,7 +5454,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.ParrySoundPreset = v
 			end,
 		}, ctx.flag("DG_ParrySoundPreset"))
-		slider(vsS, {
+		slider(vsParry, {
 			Name = "Volume",
 			Flag = "DG_ParrySoundVolume",
 			Default = Config.ParrySoundVolume,
@@ -5462,7 +5465,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.ParrySoundVolume = v
 			end,
 		})
-		vsS:Button({
+		vsParry:Button({
 			Name = "Preview",
 			Callback = function()
 				playIdSound(HIT_SOUNDS[Config.ParrySoundPreset] or 18448089848, Config.ParrySoundVolume)
