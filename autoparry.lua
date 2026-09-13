@@ -79,6 +79,9 @@ local Config = {
 	HitRingThick = 3,
 	HitRingColorA = Color3.fromRGB(70, 230, 255),
 	HitRingColorB = Color3.fromRGB(190, 80, 255),
+	AttackTrails = true,
+	TrailColorA = Color3.fromRGB(70, 230, 255),
+	TrailColorB = Color3.fromRGB(190, 80, 255),
 	ParrySound = true,
 	ParrySoundPreset = "SuccessFX",
 	ParrySoundVolume = 3.5,
@@ -1609,9 +1612,6 @@ local function pressDodge(lh)
 	if lh.IsDodging then
 		return false
 	end
-	if os.clock() - lastDodgeAt < (Config.DodgeCooldown or 0) then
-		return false
-	end
 	local am = lh.ActionManager
 	if not am or not am:CanStartDodge() then
 		return false
@@ -1703,6 +1703,41 @@ local function weaponHandler(lh)
 		return lh.WeaponToHandler[w]
 	end
 	return nil
+end
+
+local function stepTrails(lh)
+	if not Config.AttackTrails or not lh then
+		return
+	end
+	local a = Config.TrailColorA
+	local b = Config.TrailColorB
+	if typeof(a) ~= "Color3" then
+		a = Color3.fromRGB(70, 230, 255)
+	end
+	if typeof(b) ~= "Color3" then
+		b = Color3.fromRGB(190, 80, 255)
+	end
+	local seq = ColorSequence.new(a, b)
+	local function paint(tr)
+		if tr and tr:IsA("Trail") then
+			tr.Color = seq
+			tr.LightEmission = 0.85
+		end
+	end
+	local wh = weaponHandler(lh)
+	if not wh then
+		return
+	end
+	paint(wh.Trail)
+	paint(wh.UltimateTrail)
+	local inst = wh.WeaponInstance
+	if inst then
+		for _, d in inst:GetDescendants() do
+			if d:IsA("Trail") then
+				paint(d)
+			end
+		end
+	end
 end
 
 local function cosmeticNames(wh)
@@ -2196,6 +2231,13 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 	end
 	local function tryDodgeAtk()
 		if not (Config.BreakDodge and Config.AutoDodge and threat.will) then
+			return nil
+		end
+		if weStunned(lh) or lh.IsDodging then
+			return nil
+		end
+		local am = lh.ActionManager
+		if not am or not am:CanStartDodge() then
 			return nil
 		end
 		if (threat.impN or 1) > 1 and Config.AutoParry and threat.canParry then
@@ -3238,6 +3280,7 @@ bind(RunService.RenderStepped, function(dt)
 	local threat = scanThreat(lh)
 	local now = os.clock()
 	stepCosmetics(now, lh)
+	stepTrails(lh)
 	if lh and lh.OriginalModel then
 		local hp = lh.OriginalModel:GetAttribute("Health")
 		if dbg.lastHp and hp and hp < dbg.lastHp - 0.4 then
@@ -3258,11 +3301,9 @@ bind(RunService.RenderStepped, function(dt)
 			skipFollow = true
 		elseif not same then
 			skipFollow = true
-			if pressed.from == "plan" then
-				pressed.kind = nil
-				pressed.rec = nil
-				pressed.from = nil
-			end
+			pressed.kind = nil
+			pressed.rec = nil
+			pressed.from = nil
 		end
 	elseif pressed.kind == "dashatk" and (not pressed.rec or pressed.from == "plan" and (now - lastTakenAt) < 0.55) then
 		skipFollow = true
@@ -3714,6 +3755,19 @@ bind(RunService.RenderStepped, function(dt)
 					dbg.dodge += 1 dbg._note("dodge")
 					lastDodgeAt = now
 					clog("DASHATK", string.format("iframe-cover remain=%.3f last=%.3f dist=%.2f dir=%s recede=%s", threat.remain, threat.lastRemain or threat.remain, jumpDist, ddir, tostring(recede)), threat, lh)
+				elseif Config.AutoParry and combatOn and threat.canParry and threat.remain <= parryDur then
+					if pressGuard(lh) then
+						pressed.kind = "parry"
+						pressed.key = threat.key
+						pressed.swingId = threatSwingId(threat)
+						pressed.tapped = false
+						pressed.untilTime = parryUntil(now, threat, parryDur, jumpAtk)
+						dbg.parry += 1 dbg._note("parry")
+						if threat.swing and (threat.impN or 1) <= 1 then
+							threat.swing.handled = true
+						end
+						clog("PARRY_FALLBACK", string.format("dodge-fail remain=%.3f last=%.3f cur=%s", threat.remain, threat.lastRemain or threat.remain, curActName(lh)), threat, lh)
+					end
 				end
 			end
 		elseif (not punished) and rec and rec.mode == "chip" and pressed.kind ~= "chip" and not plan and not threat.canParry then
@@ -5174,6 +5228,38 @@ function genv._DGAP.buildUI(ctx)
 				end
 			end,
 		}, ctx.flag("DG_HitboxColorB"))
+
+		vsL:Divider()
+		vsL:Header({ Name = "Attack Trails" })
+		feature(vsL, {
+			Title = "Attack Trails",
+			Flag = "DG_AttackTrails",
+			Desc = "Recolors your weapon swing trails.",
+			get = function()
+				return Config.AttackTrails
+			end,
+			set = function(v)
+				Config.AttackTrails = v
+			end,
+		})
+		vsL:Colorpicker({
+			Name = "Trail A",
+			Default = Config.TrailColorA,
+			Callback = function(c)
+				if typeof(c) == "Color3" then
+					Config.TrailColorA = c
+				end
+			end,
+		}, ctx.flag("DG_TrailColorA"))
+		vsL:Colorpicker({
+			Name = "Trail B",
+			Default = Config.TrailColorB,
+			Callback = function(c)
+				if typeof(c) == "Color3" then
+					Config.TrailColorB = c
+				end
+			end,
+		}, ctx.flag("DG_TrailColorB"))
 
 		local vsR = Visuals:Section({ Side = "Right" })
 		vsR:Header({ Name = "Custom Model" })
