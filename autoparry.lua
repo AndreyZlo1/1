@@ -1571,6 +1571,7 @@ local function releaseGuard(lh)
 end
 
 local lastDodgeAt = 0
+local dodgeHold = { dir = nil }
 local enemyMot = {}
 
 local function enemyVel(model, root)
@@ -1649,6 +1650,7 @@ local function moveDirToward(lh, dest)
 	lh.DesiredLookDirection = dir
 	lh.DesiredLookResponsiveness = 90
 	lh.DesiredMoveDirection = dir
+	dodgeHold.dir = dir
 	return dir
 end
 
@@ -2037,6 +2039,16 @@ local function dodgeTravel(lh)
 	return 7.8 * dd
 end
 
+local function dodgeSlideDist(t, dd)
+	local v0 = 40 * (dd or 1)
+	local dec = v0 * 1.5
+	if dec < 0.01 then
+		return 0
+	end
+	t = math.clamp(t, 0, v0 / dec)
+	return v0 * t - 0.5 * dec * t * t
+end
+
 local function packAttackRec(pack, name)
 	local atk = pack and pack.attacks[name]
 	if not atk or not atk.impacts or not atk.impacts[1] then
@@ -2379,7 +2391,7 @@ local function lookAtFlat(from, to)
 	return CFrame.lookAt(from, p)
 end
 
-local function attackHits(lh, name, enemyRoot, enemyModel)
+local function attackHits(lh, name, enemyRoot, enemyModel, predPos, fromPos)
 	if not lh or not lh.Root or not enemyRoot then
 		return false
 	end
@@ -2390,8 +2402,10 @@ local function attackHits(lh, name, enemyRoot, enemyModel)
 		return false
 	end
 	local imp = atk.impacts[1]
-	local boxCF = lookAtFlat(lh.Root.Position, enemyRoot.Position) * imp.cf
-	return obbHitsSphere(boxCF, imp.size, enemyRoot.Position, enemyRadius(enemyModel) * 0.72)
+	local ep = predPos or enemyRoot.Position
+	local fp = fromPos or lh.Root.Position
+	local boxCF = lookAtFlat(fp, ep) * imp.cf
+	return obbHitsSphere(boxCF, imp.size, ep, enemyRadius(enemyModel) * 0.72)
 end
 
 local function queueNamed(lh, rec)
@@ -2656,8 +2670,8 @@ local function tryAttackHelper(lh, threat)
 		end
 	end
 
-	local function fire(name, tag, model, root, remain)
-		if not attackHits(lh, name, root, model) then
+	local function fire(name, tag, model, root, remain, predPos, fromPos)
+		if not attackHits(lh, name, root, model, predPos, fromPos) then
 			return false
 		end
 		lastAH = now
@@ -2753,7 +2767,60 @@ local function tryAttackHelper(lh, threat)
 					local d = dist2d(lh.Root.Position, root.Position)
 					local standName = comboAttackName(lh, "Light")
 					local ourHit = impactT(standName)
-					if not isRev and not ahDodgeLock[lockK] then
+					local theirW = equippedName(model)
+					local theirDd = 1
+					if type(theirW) == "string" and catalog[theirW] then
+						theirDd = catalog[theirW].dodgeDist or 1
+					end
+					local ourDd = 1
+					if type(ourW) == "string" and catalog[ourW] then
+						ourDd = catalog[ourW].dodgeDist or 1
+					end
+					if isRev and not ahDodgeLock[lockK] then
+						local fromP = lh.Root.Position
+						local to = Vector3.new(root.Position.X - fromP.X, 0, root.Position.Z - fromP.Z)
+						local away = to.Magnitude > 0.1 and to.Unit or Vector3.new(0, 0, -1)
+						local predI = root.Position + away * dodgeSlideDist(iframeLeft, theirDd)
+						if iframeLeft <= ourHit + 0.02 and iframeLeft >= ourHit - 0.03 then
+							if fire(standName, "PERFDODGE_BACK", model, root, iframeLeft, predI) then
+								ahDodgeLock[lockK] = true
+								return true
+							end
+						end
+						local dashHit = impactT("DashLight")
+						local total = 0.267 + dashHit
+						if iframeLeft > 0.02 and iframeLeft <= total + 0.05 then
+							local ourSlide = dodgeSlideDist(0.267, ourDd)
+							local theirSlide = dodgeSlideDist(math.min(0.466 - dodgeAge, total), theirDd)
+							local predUs = fromP + away * ourSlide
+							local predThem = root.Position + away * theirSlide
+							if attackHits(lh, "DashLight", root, model, predThem, predUs) then
+								if dodgeToward(lh, root.Position) then
+									ahDodgeLock[lockK] = true
+									lastAH = now
+									pressed.kind = "dashatk"
+									pressed.from = "ah"
+									pressed.at = now
+									pressed.untilTime = now + 0.45
+									pressed.rec = { name = "DashLight", kind = "Light" }
+									dbg.helper += 1
+									clog("AH_BACKDODGE", string.format("iframe=%.3f d=%.2f dashHit=%.3f", iframeLeft, d, dashHit), {
+										weapon = equippedName(model),
+										attack = "BACKDODGE",
+										remain = iframeLeft,
+										tpos = dodgeAge,
+										will = false,
+										superArmor = 0,
+										model = model,
+										root = root,
+										impIndex = 1,
+										impN = 1,
+									}, lh)
+									return true
+								end
+							end
+						end
+					elseif not isRev and not ahDodgeLock[lockK] then
 						local toward = isFacing(root, lh.Root.Position, 70)
 						if toward and iframeLeft <= ourHit + 0.02 and iframeLeft >= ourHit - 0.03 then
 							if fire(standName, "PERFDODGE", model, root, iframeLeft) then
@@ -3144,6 +3211,26 @@ bind(RunService.Heartbeat, function(dt)
 		end
 	end
 	local am = lh.ActionManager
+	if am and not am._dgapDodgeWrap and type(am._checkForDodgeActionChanges) == "function" then
+		am._dgapDodgeWrap = true
+		local oldDodge = am._checkForDodgeActionChanges
+		am._checkForDodgeActionChanges = function(self, moveDir)
+			local hold = dodgeHold.dir
+			if typeof(hold) == "Vector3" and hold.Magnitude > 0.1 then
+				moveDir = hold
+			end
+			return oldDodge(self, moveDir)
+		end
+	end
+	if dodgeHold.dir then
+		if lh.IsDodging or lh._desiredDodge then
+			lh.DesiredMoveDirection = dodgeHold.dir
+			lh.DesiredLookDirection = dodgeHold.dir
+			lh.DesiredLookResponsiveness = 90
+		else
+			dodgeHold.dir = nil
+		end
+	end
 	if (Config.CustomCombo or Config.NoDelay) and am and not am._dgapWrap and type(am.TryQueueBasicAttack) == "function" then
 		am._dgapWrap = true
 		local old = am.TryQueueBasicAttack
@@ -4168,7 +4255,7 @@ bind(ReplicatedStorage.Remotes.Combat.Impact.OnClientEvent, function(_, effect, 
 		return
 	end
 	local pos = cf.Position
-	if isLocalModel(attacker) and not PARRY_EFFECTS[effect] and effect ~= "Block" and effect ~= "LightBlock" and effect ~= "UltimateBlock" then
+	if isLocalModel(attacker) and HIT_EFFECTS[effect] then
 		onLocalConfirmedHit(pos)
 		dlog("HIT_FX", "effect=" .. tostring(effect))
 	end
