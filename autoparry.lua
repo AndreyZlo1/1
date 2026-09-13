@@ -2242,41 +2242,52 @@ function dodgeHold.atmo()
 	end
 end
 
-function dodgeHold.queueTick()
-	if not Config.AutoQueue or not running then
-		return
-	end
-	local pid = game.PlaceId
-	if pid ~= 100484168444874 and pid ~= 107083982238164 and pid ~= 93870717579227 then
-		return
-	end
-	if LocalPlayer:GetAttribute("InMatch") then
-		return
-	end
-	local st = ReplicatedStorage:GetAttribute("MM_State")
-	if st == "Searching" or st == "MatchFound" or st == "Starting" or st == "WaitingForPlayers" then
-		return
-	end
-	local ds = ReplicatedStorage:GetAttribute("ReservedDuelStatus")
-	if ds == "Active" or ds == "Starting" or ds == "WaitingForPlayers" then
-		return
-	end
-	local now = os.clock()
-	if dodgeHold.qWait and now < dodgeHold.qWait then
-		return
-	end
-	if dodgeHold.qAt and now - dodgeHold.qAt < 6 then
-		return
-	end
+function dodgeHold.queueFire(force)
 	local mm = ReplicatedStorage:FindFirstChild("Remotes")
 	mm = mm and mm:FindFirstChild("Matchmaking")
 	local rem = mm and mm:FindFirstChild("RequestEnterQueue")
-	if not rem then
-		return
-	end
 	local mode = Config.QueueMode == "Ranked" and "ranked1v1" or "casual1v1"
+	local inMatch = LocalPlayer:GetAttribute("InMatch")
+	local st = ReplicatedStorage:GetAttribute("MM_State")
+	local ds = ReplicatedStorage:GetAttribute("ReservedDuelStatus")
+	local gm = ReplicatedStorage:GetAttribute("MM_Gamemode")
+	if force then
+		print(string.format("[DG-MM] pid=%s InMatch=%s MM_State=%s DuelStatus=%s Gamemode=%s rem=%s mode=%s auto=%s run=%s", tostring(game.PlaceId), tostring(inMatch), tostring(st), tostring(ds), tostring(gm), tostring(rem ~= nil), mode, tostring(Config.AutoQueue), tostring(running)))
+	end
+	if not rem then
+		return false, "no RequestEnterQueue"
+	end
+	if not force then
+		if not Config.AutoQueue or not running then
+			return false, "off"
+		end
+		if inMatch then
+			return false, "InMatch"
+		end
+		if st == "Searching" or st == "MatchFound" or st == "Starting" or st == "WaitingForPlayers" then
+			return false, "MM_State"
+		end
+		if ds == "Active" or ds == "Starting" or ds == "WaitingForPlayers" then
+			return false, "DuelStatus"
+		end
+		local now = os.clock()
+		if dodgeHold.qWait and now < dodgeHold.qWait then
+			return false, "wait"
+		end
+		if dodgeHold.qAt and now - dodgeHold.qAt < 6 then
+			return false, "throttle"
+		end
+	end
 	rem:FireServer(mode)
-	dodgeHold.qAt = now
+	dodgeHold.qAt = os.clock()
+	if force then
+		print("[DG-MM] FireServer " .. mode)
+	end
+	return true, mode
+end
+
+function dodgeHold.queueTick()
+	dodgeHold.queueFire(false)
 end
 
 local function comboAttackName(lh, wantKind)
@@ -6084,6 +6095,13 @@ function genv._DGAP.buildUI(ctx)
 				Config.QueueMode = v
 			end,
 		}, ctx.flag("DG_QueueMode"))
+		msQ:Button({
+			Name = "Queue Now",
+			Callback = function()
+				local ok, why = dodgeHold.queueFire(true)
+				notify("MM", ok and ("fired " .. tostring(why)) or tostring(why))
+			end,
+		})
 	end
 
 	-- ════════════════════════════════ Debug ════════════════════════════════
