@@ -2143,6 +2143,8 @@ local function rollSticky(swing, key, chance)
 	return swing.rolls[key]
 end
 
+local dbg
+
 local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpReach)
 	local swing = threat.swing
 	if not Config.SmartInterrupt then
@@ -2371,7 +2373,7 @@ local ahDodgeLock = {}
 local pressed = { kind = nil, untilTime = 0, key = "", rec = nil }
 local parrySigLh = nil
 
-local dbg = {
+dbg = {
 	events = {},
 	seen = {},
 	will = 0,
