@@ -1,6 +1,6 @@
 local genv = getgenv()
 if genv._DGAP then
-	pcall(genv._DGAP.unload)
+	genv._DGAP.unload()
 end
 
 local ESP_STYLES = { "Soul", "Skeleton", "Rift", "Weave" }
@@ -113,14 +113,7 @@ repeat
 until ReplicatedStorage:GetAttribute("ControllersLoaded") and ReplicatedStorage:FindFirstChild("GameManager")
 
 local function filterTables(keys)
-	if type(filtergc) ~= "function" then
-		return nil
-	end
-	local ok, res = pcall(filtergc, "table", { Keys = keys })
-	if ok and type(res) == "table" then
-		return res
-	end
-	return nil
+	return filtergc("table", { Keys = keys })
 end
 
 local function stealTable(pred, keys)
@@ -203,8 +196,8 @@ do
 		[93870717579227] = true,
 	}
 	local isDuel = duelPlaces[game.PlaceId] == true
-	local okGm, gm = pcall(require, ReplicatedStorage.GameManager)
-	if okGm and gm and gm.Globals and gm.Globals.IS_DUEL_RESERVED_SERVER == true then
+	local gm = require(ReplicatedStorage.GameManager)
+	if gm.Globals and gm.Globals.IS_DUEL_RESERVED_SERVER == true then
 		isDuel = true
 	end
 	local kicked = false
@@ -231,13 +224,9 @@ do
 		end
 		if #Players:GetPlayers() > expectedCap() then
 			kicked = true
-			pcall(function()
-				LocalPlayer:Kick("Staff detected!")
-			end)
+			LocalPlayer:Kick("Staff detected!")
 			task.defer(function()
-				pcall(function()
-					game:Shutdown()
-				end)
+				game:Shutdown()
 			end)
 		end
 	end
@@ -1405,10 +1394,7 @@ local function isEnemyModel(model, localOriginal)
 	if not model or model == localOriginal or model:GetAttribute("IsDead") then
 		return false
 	end
-	local okLocal, isLocal = pcall(function()
-		return CharacterController:IsLocalCharacterModel(model)
-	end)
-	if okLocal and isLocal then
+	if CharacterController:IsLocalCharacterModel(model) then
 		return false
 	end
 	if model:GetAttribute("UserId") == LocalPlayer.UserId then
@@ -1756,16 +1742,10 @@ local function applySkin(name)
 		print("[DG-AP] skin fail: no weapon handler w=" .. tostring(lh.EquippedWeapon))
 		return false
 	end
-	local ok, err = pcall(function()
-		if wh.WeaponInstance then
-			wh.WeaponInstance:SetAttribute("CurrentCosmetic", name)
-		end
-		wh:SetCosmetic(name)
-	end)
-	if not ok then
-		print("[DG-AP] skin err:", tostring(err))
-		return false
+	if wh.WeaponInstance then
+		wh.WeaponInstance:SetAttribute("CurrentCosmetic", name)
 	end
+	wh:SetCosmetic(name)
 	Config.WeaponSkins[tostring(lh.EquippedWeapon)] = name
 	lastSkin = name .. ":" .. tostring(lh.EquippedWeapon)
 	print("[DG-AP] skin=" .. name .. " weapon=" .. tostring(lh.EquippedWeapon))
@@ -1788,16 +1768,7 @@ end
 local cosmeticStore = { body = {}, hlBody = nil, lastKey = "" }
 
 local function parseMaterial(name)
-	if type(name) ~= "string" or name == "" then
-		return Enum.Material.ForceField
-	end
-	local ok, mat = pcall(function()
-		return Enum.Material[name]
-	end)
-	if ok and typeof(mat) == "EnumItem" then
-		return mat
-	end
-	return Enum.Material.ForceField
+	return Enum.Material[name]
 end
 
 local function paintParts(root, matEnum, store, col, transp, mode)
@@ -1860,9 +1831,7 @@ local function paintParts(root, matEnum, store, col, transp, mode)
 		if type(transp) == "number" then
 			d.Transparency = transp
 		end
-		pcall(function()
-			d.Reflectance = matEnum == Enum.Material.Glass and 0.4 or 0
-		end)
+		d.Reflectance = matEnum == Enum.Material.Glass and 0.4 or 0
 		if d:IsA("MeshPart") then
 			d.TextureID = ""
 		end
@@ -1882,9 +1851,7 @@ local function restoreParts(store)
 				inst.Transparency = old.tr
 			end
 			if type(old.ref) == "number" then
-				pcall(function()
-					inst.Reflectance = old.ref
-				end)
+				inst.Reflectance = old.ref
 			end
 			if inst:IsA("MeshPart") and type(old.tex) == "string" then
 				inst.TextureID = old.tex
@@ -1958,9 +1925,7 @@ local function stepCosmetics(now, lh)
 			if root then
 				local av = root:FindFirstChild("DGAP_Avatar", true)
 				if av then
-					pcall(function()
-						av:Destroy()
-					end)
+					av:Destroy()
 				end
 			end
 		end
@@ -2268,24 +2233,26 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 	}
 	local function runOrder(allowRepeat)
 		for _, step in order do
-			local key = step == "Dodge+Attack" and "dodge" or string.lower(step)
-			if allowRepeat or not dbg._repeat(key) then
-				local p
-				if step == "Heavy" then
-					p = tryHeavy()
-				elseif step == "Light" then
-					p = tryLight()
-				elseif step == "Dodge+Attack" then
-					p = tryDodgeAtk()
-				elseif step == "Jump" then
-					p = tryJump()
-				elseif step == "Parry" then
-					if Config.AutoParry and threat.canParry then
-						return false
+			if type(step) == "string" then
+				local key = step == "Dodge+Attack" and "dodge" or string.lower(step)
+				if allowRepeat or not dbg._repeat(key) then
+					local p
+					if step == "Heavy" then
+						p = tryHeavy()
+					elseif step == "Light" then
+						p = tryLight()
+					elseif step == "Dodge+Attack" then
+						p = tryDodgeAtk()
+					elseif step == "Jump" then
+						p = tryJump()
+					elseif step == "Parry" then
+						if Config.AutoParry and threat.canParry then
+							return false
+						end
 					end
-				end
-				if p then
-					return p
+					if p then
+						return p
+					end
 				end
 			end
 		end
@@ -2347,11 +2314,16 @@ local function ourReach(lh, attackName)
 	local w = equippedName(lh.OriginalModel)
 	local pack = type(w) == "string" and catalog[w]
 	local atk = pack and (pack.attacks[attackName] or pack.attacks.Light01)
-	if not atk or not atk.impacts[1] then
+	if not atk or not atk.impacts or not atk.impacts[1] then
 		return 4
 	end
 	local imp = atk.impacts[1]
-	return math.abs(imp.cf.Position.Z) + imp.size.Z * 0.5
+	local cf = imp.cf
+	local sz = imp.size
+	if not cf or not sz then
+		return 4
+	end
+	return math.abs(cf.Position.Z) + sz.Z * 0.5
 end
 
 local function enemyRadius(model)
@@ -2462,6 +2434,10 @@ dbg._repeat = function(kind)
 		return false
 	end
 	local h = dbg._hist
+	if type(h) ~= "table" then
+		dbg._hist = {}
+		return false
+	end
 	local n = #h
 	if n < 3 then
 		return false
@@ -2684,11 +2660,8 @@ local function tryAttackHelper(lh, threat)
 				end
 				local dodgeAge, isRev, recovering, jumping, swinging, blockingAnim, blockAge
 				if animator then
-					local okTracks, tracks = pcall(function()
-						return animator:GetPlayingAnimationTracks()
-					end)
-					if okTracks and tracks then
-						for _, track in tracks do
+					local tracks = animator:GetPlayingAnimationTracks()
+					for _, track in tracks do
 							local anim = track.Animation
 							local id = anim and anim.AnimationId
 							if id then
@@ -2721,11 +2694,9 @@ local function tryAttackHelper(lh, threat)
 										end
 									end
 								end
-							end
-						end
-					end
-				end
-				if (jumping or swinging or (threat and threat.will and threat.model == model and not threat.windup)) and not dodgeAge then
+								end
+								end
+								if (jumping or swinging or (threat and threat.will and threat.model == model and not threat.windup)) and not dodgeAge then
 					continue
 				end
 				local lockK = tostring(model)
@@ -2935,24 +2906,15 @@ local function scanThreat(lh)
 			end
 			if root and animator then
 				local weaponName = equippedName(model) or model:GetAttribute("EquippedWeapon")
-				local okTracks, tracks = pcall(function()
-					return animator:GetPlayingAnimationTracks()
-				end)
-				if okTracks and tracks then
-					for _, track in tracks do
+				local tracks = animator:GetPlayingAnimationTracks()
+				for _, track in tracks do
 						local anim = track.Animation
 						local id = anim and anim.AnimationId
 						if id then
 							local entry = lookupAttack(weaponName, id)
 							if entry then
 								local tpos = track.TimePosition
-								local wgt = 1
-								local okw, wc = pcall(function()
-									return track.WeightCurrent
-								end)
-								if okw and type(wc) == "number" then
-									wgt = wc
-								end
+								local wgt = track.WeightCurrent
 								if wgt < 0.03 then
 									continue
 								end
@@ -3227,9 +3189,7 @@ bind(RunService.Heartbeat, function(dt)
 		if cur and cur.ActionType == "Stagger" then
 			cur.CanCancel = true
 			cur.CanChainBasicAttack = true
-			pcall(function()
-				cur:CompleteSequence()
-			end)
+			cur:CompleteSequence()
 		end
 	end
 	if Config.NoSlowdown and not lh.IsDodging then
@@ -3538,6 +3498,56 @@ bind(RunService.RenderStepped, function(dt)
 	local interruptOn = swingOn and (threat.will or theyFaceUs)
 	local combatOn = threat and threat.will and swingOn
 	if (Config.AutoParry or Config.AutoDodge or Config.SmartInterrupt or Config.JumpAttackCounter) and (interruptOn or combatOn) and lh and serverReady(lh) and pressed.kind ~= "wait" and (Config.GodMode or not lh.IsDodging or (threat.remain or 1) <= 0.16) and not (threat.swing and threat.swing.handled) then
+		if jumpAtk and threat.will and (pressed.kind == nil or pressed.kind == "ah") then
+			pressed.kind = nil
+			local jdist = 0
+			if lh.Root and threat.root then
+				jdist = dist2d(lh.Root.Position, threat.root.Position)
+			end
+			local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
+			local did = false
+			if Config.AutoDodge and not lh.IsDodging then
+				local dodged, ddir = dodgeAt(lh, threat.root.Position, jdist, true)
+				if dodged then
+					pressed.kind = "dodge"
+					pressed.key = threat.key
+					pressed.untilTime = now + 0.32
+					dbg.dodge += 1
+					dbg._note("dodge")
+					lastDodgeAt = now
+					if threat.swing then
+						threat.swing.handled = true
+					end
+					clog("DASHATK", string.format("jump-slam remain=%.3f dist=%.2f dir=%s recede=%s", threat.remain, jdist, ddir, tostring(recede)), threat, lh)
+					did = true
+				end
+			end
+			if not did and Config.AutoParry and threat.canParry then
+				if pressGuard(lh) then
+					pressed.kind = "parry"
+					pressed.key = threat.key
+					pressed.swingId = threatSwingId(threat)
+					pressed.tapped = false
+					local strength = 1
+					if lh.ActionManager and type(lh.ActionManager._blockStrength) == "number" then
+						strength = lh.ActionManager._blockStrength
+					end
+					local pDur = 0.13333333333333333 + 0.1 * math.clamp(strength, 0, 1)
+					pressed.untilTime = parryUntil(now, threat, pDur, true)
+					dbg.parry += 1
+					dbg._note("parry")
+					if threat.swing then
+						threat.swing.handled = true
+					end
+					clog("PARRY", string.format("jump-slam remain=%.3f dist=%.2f", threat.remain, jdist), threat, lh)
+					did = true
+				end
+			end
+			if did then
+				-- slam closed this frame; skip planBreak
+			end
+		end
+		if not (pressed.kind == "dodge" or pressed.kind == "parry") or not jumpAtk then
 		local ping = PingController and PingController:GetPing() or 0
 		local strength = 1
 		if lh.ActionManager and type(lh.ActionManager._blockStrength) == "number" then
@@ -3836,6 +3846,7 @@ bind(RunService.RenderStepped, function(dt)
 				end
 			end
 		end
+		end
 	end
 	if not Config.Visuals then
 		renderHitFX(now)
@@ -4063,7 +4074,7 @@ end)
 local function unload()
 	running = false
 	releaseGuard(localHandler())
-	pcall(clearCosmetics)
+	clearCosmetics()
 	for _, c in conns do
 		c:Disconnect()
 	end
@@ -4079,7 +4090,7 @@ genv._DGAP = {
 	unload = unload,
 	start = function() end,
 	stop = function()
-		pcall(unload)
+		unload()
 	end,
 	config = Config,
 	catalog = catalog,
@@ -4099,7 +4110,7 @@ function genv._DGAP.buildUI(ctx)
 	end)
 	local function notify(title, body)
 		if uiReady then
-			pcall(ctx.notify, title, body)
+			ctx.notify(title, body)
 		end
 	end
 	local function disc(section, text)
@@ -4115,9 +4126,7 @@ function genv._DGAP.buildUI(ctx)
 			notify(o.Title, val and "Enabled" or "Disabled")
 			guard = true
 			if togEl then
-				pcall(function()
-					togEl:UpdateState(val)
-				end)
+				togEl:UpdateState(val)
 			end
 			guard = false
 		end
@@ -4195,21 +4204,13 @@ function genv._DGAP.buildUI(ctx)
 			return
 		end
 		if el.UpdateState then
-			pcall(function()
-				el:UpdateState(val and true or false)
-			end)
+			el:UpdateState(val and true or false)
 		elseif el.UpdateValue then
-			pcall(function()
-				el:UpdateValue(val, true)
-			end)
+			el:UpdateValue(val, true)
 		elseif el.UpdateSelection then
-			pcall(function()
-				el:UpdateSelection(val)
-			end)
+			el:UpdateSelection(val)
 		elseif el.SetColor then
-			pcall(function()
-				el:SetColor(val)
-			end)
+			el:SetColor(val)
 		end
 	end
 	local PRESETS = {
@@ -4874,15 +4875,11 @@ function genv._DGAP.buildUI(ctx)
 			local m = ensureMap(comboWep)
 			for i, el in lightSlots do
 				local v = m.Light[i] or "none"
-				pcall(function()
-					el:UpdateSelection(v)
-				end)
+				el:UpdateSelection(v)
 			end
 			for i, el in heavySlots do
 				local v = m.Heavy[i] or "none"
-				pcall(function()
-					el:UpdateSelection(v)
-				end)
+				el:UpdateSelection(v)
 			end
 		end
 		atR:Dropdown({
@@ -5181,7 +5178,7 @@ function genv._DGAP.buildUI(ctx)
 			set = function(v)
 				Config.CustomModel = v
 				if not v then
-					pcall(clearCosmetics)
+					clearCosmetics()
 				end
 			end,
 		})
@@ -5415,9 +5412,7 @@ function genv._DGAP.buildUI(ctx)
 					Config.WeaponSkins[wname] = "Default"
 					local el = skinEls[wname]
 					if el then
-						pcall(function()
-							el:UpdateSelection("Default")
-						end)
+						el:UpdateSelection("Default")
 					end
 				end
 				applySkin("Default")
@@ -5451,7 +5446,7 @@ function genv._DGAP.buildUI(ctx)
 		dbgU:Button({
 			Name = "Unload Combat",
 			Callback = function()
-				pcall(unload)
+				unload()
 				notify("DG-AP", "unloaded")
 			end,
 		})
