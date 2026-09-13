@@ -32,7 +32,7 @@ local Config = {
 	DodgeRange = 1,
 	DodgeCooldown = 0.15,
 	ParryChance = 1,
-	DodgeChance = 1,
+	DodgeChance = 0,
 	IntentionalBlock = false,
 	IntentionalBlockChance = 0,
 	HumanDelay = false,
@@ -43,6 +43,7 @@ local Config = {
 	EspColorB = Color3.fromRGB(190, 80, 255),
 	EspSpeed = 1,
 	EspThick = 2,
+	FaceCone = 38,
 	ReachPad = 0.65,
 	ParryLead = 0,
 	DodgeLead = 0.22,
@@ -81,6 +82,9 @@ local Config = {
 	AHPunishBlock = true,
 	AHPunishWhiff = true,
 	AHJumpChase = true,
+	AHCooldown = 0.18,
+	AHBlockHold = 0.05,
+	AHWhiffGate = 0.45,
 	StaffDetect = true,
 	CustomModel = true,
 	CustomModelMaterial = "Glass",
@@ -513,8 +517,7 @@ local function lerpColor(a, b, t)
 end
 
 local function gradAlong(t, a, b)
-	local spd = a == nil and (Config.EspSpeed or 1) or 1
-	local u = (t * spd) % 1
+	local u = t % 1
 	local s = 0.5 - 0.5 * math.cos(u * 6.283185307179586)
 	local ca = a or Config.EspColorA or CYAN
 	local cb = b or Config.EspColorB or MAGENTA
@@ -858,6 +861,8 @@ local function morphPoly(k0, k1, t, n, r)
 end
 
 local function renderSoul(model, root, radius, yMin, yMax, _color, appear, now)
+	now = now * (Config.EspSpeed or 1)
+	local th = Config.EspThick or 2
 	local ease = appear * appear * (3 - 2 * appear)
 	local head = partPos(model, "Head") or (root.CFrame * Vector3.new(0, yMax, 0))
 	local fl = partPos(model, "LeftFoot")
@@ -884,7 +889,7 @@ local function renderSoul(model, root, radius, yMin, yMax, _color, appear, now)
 			local p = Vector3.new(base.X + math.cos(twist) * rad, base.Y, base.Z + math.sin(twist) * rad)
 			if prev then
 				local pulse = 0.55 + 0.45 * math.sin(now * 1.4 + wi)
-				line3(prev, p, gradAlong(u + now * 0.22 + wi * 0.12), 2, vis * pulse)
+				line3(prev, p, gradAlong(u + now * 0.22 + wi * 0.12), th, vis * pulse)
 			end
 			prev = p
 		end
@@ -892,13 +897,15 @@ local function renderSoul(model, root, radius, yMin, yMax, _color, appear, now)
 end
 
 local function renderSkeleton(model, _root, _color, appear, now)
+	now = now * (Config.EspSpeed or 1)
+	local th = Config.EspThick or 2
 	local a0 = appear * 0.95
 	local col = gradAlong(now * 0.18)
 	for _, pair in BONES do
 		local a = partPos(model, pair[1])
 		local b = partPos(model, pair[2])
 		if a and b then
-			line3(a, b, col, 2, a0)
+			line3(a, b, col, th, a0)
 			local j = a:Lerp(b, 0.5)
 			local side = (b - a)
 			if side.Magnitude > 0.2 then
@@ -913,6 +920,8 @@ local function renderSkeleton(model, _root, _color, appear, now)
 end
 
 local function renderPulse(root, radius, yMin, yMax, _color, appear, now)
+	now = now * (Config.EspSpeed or 1)
+	local th = Config.EspThick or 2
 	local mid = root.CFrame * Vector3.new(0, (yMin + yMax) * 0.5, 0)
 	local s = radius * (1.05 + 0.18 * math.sin(now * 2.4))
 	local v = {
@@ -927,11 +936,13 @@ local function renderPulse(root, radius, yMin, yMax, _color, appear, now)
 	local vis = appear * 0.94
 	local col = gradAlong(now * 0.18)
 	for _, e in edges do
-		line3(v[e[1]], v[e[2]], col, 2, vis)
+		line3(v[e[1]], v[e[2]], col, th, vis)
 	end
 end
 
 local function renderCoil(root, radius, yMin, yMax, _color, appear, now)
+	now = now * (Config.EspSpeed or 1)
+	local th = Config.EspThick or 2
 	local origin = root.CFrame.Position
 	local span = yMax - yMin
 	local vis = appear * 0.94
@@ -944,10 +955,12 @@ local function renderCoil(root, radius, yMin, yMax, _color, appear, now)
 		local rad = radius * 1.15
 		pts[s + 1] = origin + Vector3.new(math.cos(ang) * rad, y, math.sin(ang) * rad)
 	end
-	pathLine(pts, now, 2, vis)
+	pathLine(pts, now, th, vis)
 end
 
 local function renderRift(root, radius, yMin, yMax, _color, appear, now)
+	now = now * (Config.EspSpeed or 1)
+	local th = Config.EspThick or 2
 	local ease = appear * appear * (3 - 2 * appear)
 	local mid = root.CFrame * Vector3.new(0, (yMin + yMax) * 0.5, 0)
 	local spin = now * 0.55
@@ -961,7 +974,7 @@ local function renderRift(root, radius, yMin, yMax, _color, appear, now)
 		if i % 2 == 1 then
 			local a0 = spin + (i - 1) / segs * 6.283185307179586
 			local a1 = spin + i / segs * 6.283185307179586
-			line3(orbitPt(a0, i), orbitPt(a1, i + 1), gradAlong(i / segs + now * 0.18), 2, ease * 0.38)
+			line3(orbitPt(a0, i), orbitPt(a1, i + 1), gradAlong(i / segs + now * 0.18), th, ease * 0.38)
 		end
 	end
 	local shards = 8
@@ -975,14 +988,16 @@ local function renderRift(root, radius, yMin, yMax, _color, appear, now)
 			local up = Vector3.new(0, 0.3 * u, 0)
 			local gc = gradAlong(i / shards + now * 0.28)
 			local vis = ease * 0.9 * u
-			line3(p + tangent, p - tangent * 0.55 + up, gc, 2, vis)
-			line3(p - tangent * 0.55 + up, p - tangent * 0.25 - up * 0.45, gc, 2, vis)
-			line3(p - tangent * 0.25 - up * 0.45, p + tangent, gc, 2, vis)
+			line3(p + tangent, p - tangent * 0.55 + up, gc, th, vis)
+			line3(p - tangent * 0.55 + up, p - tangent * 0.25 - up * 0.45, gc, th, vis)
+			line3(p - tangent * 0.25 - up * 0.45, p + tangent, gc, th, vis)
 		end
 	end
 end
 
 local function renderWeave(root, radius, yMin, yMax, _color, appear, now)
+	now = now * (Config.EspSpeed or 1)
+	local th = Config.EspThick or 2
 	local mid = root.CFrame * Vector3.new(0, (yMin + yMax) * 0.5, 0)
 	local vis = appear * 0.94
 	local segs = 32
@@ -997,7 +1012,7 @@ local function renderWeave(root, radius, yMin, yMax, _color, appear, now)
 			local rad = radius * 1.35 * warp
 			pts[s + 1] = mid + Vector3.new(math.cos(a) * rad, y, math.sin(a) * rad)
 		end
-		pathLine(pts, now + strand, 2, vis)
+		pathLine(pts, now + strand, th, vis)
 	end
 end
 
@@ -2350,6 +2365,7 @@ local dbg = {
 	lastHp = nil,
 	lastThreat = "",
 	_cidx = {},
+	_ndAtk = {},
 }
 
 dbg._hd = function(remain, needRemain)
@@ -2370,6 +2386,31 @@ dbg._hd = function(remain, needRemain)
 		d = slack * (0.4 + rng:NextNumber() * 0.45)
 	end
 	return d
+end
+
+dbg._ndApply = function(am)
+	if not am then
+		return
+	end
+	local props = am._queuedActionProperties
+	if type(props) ~= "table" or type(props.attackName) ~= "string" then
+		return
+	end
+	local ch = am.CharacterHandler
+	if not ch or type(ch.GetEquippedWeaponHandler) ~= "function" then
+		return
+	end
+	local wh = ch:GetEquippedWeaponHandler()
+	local types = wh and wh.WeaponInfo and wh.WeaponInfo.BasicAttackTypes
+	local atk = types and types[props.attackName]
+	if type(atk) ~= "table" then
+		return
+	end
+	if atk._dgapTS == nil then
+		atk._dgapTS = atk.clientTransitionSpeed or 1
+		dbg._ndAtk[#dbg._ndAtk + 1] = atk
+	end
+	atk.clientTransitionSpeed = 8
 end
 
 local function enemyLine(threat, lh)
@@ -2474,7 +2515,7 @@ local function tryAttackHelper(lh, threat)
 			return false
 		end
 	end
-	if os.clock() - lastAH < 0.18 then
+	if os.clock() - lastAH < (Config.AHCooldown or 0.18) then
 		return false
 	end
 	if not canStartInterrupt(lh) or not lh.Root then
@@ -2707,7 +2748,7 @@ local function tryAttackHelper(lh, threat)
 					local replicaAge = blockAge or 0
 					local standR = ourReach(lh, nextL)
 					local standOk = d <= standR
-					local delay = replicaAge > 0.12 and 0.02 or 0.05
+					local delay = replicaAge > 0.12 and 0.02 or (Config.AHBlockHold or 0.05)
 					if holdT >= delay then
 						blockPunished[model] = true
 						if standOk and fire(nextL, "BLOCKPUNISH", model, root, 0) then
@@ -2748,7 +2789,7 @@ local function tryAttackHelper(lh, threat)
 						return true
 					end
 				end
-				if Config.AHPunishWhiff and recovering and (now - lastAH) > 0.45 and (now - lastDodgeAt) > 0.5 and (now - lastTakenAt) > 0.65 then
+				if Config.AHPunishWhiff and recovering and (now - lastAH) > (Config.AHWhiffGate or 0.45) and (now - lastDodgeAt) > 0.5 and (now - lastTakenAt) > 0.65 then
 					if fire(nextL, "WHIFF", model, root, 0) then
 						return true
 					end
@@ -3006,28 +3047,59 @@ bind(RunService.Heartbeat, function(dt)
 		end
 	end
 	local am = lh.ActionManager
-	if Config.CustomCombo and am and not am._dgapWrap and type(am.TryQueueBasicAttack) == "function" then
+	if (Config.CustomCombo or Config.NoDelay) and am and not am._dgapWrap and type(am.TryQueueBasicAttack) == "function" then
 		am._dgapWrap = true
 		local old = am.TryQueueBasicAttack
 		am.TryQueueBasicAttack = function(self, kind, ...)
-			if kind == "Light" or kind == "Heavy" then
+			if Config.CustomCombo and (kind == "Light" or kind == "Heavy") then
 				local ww = equippedName(self.CharacterHandler and self.CharacterHandler.OriginalModel)
+				local pack = ww and catalog[ww]
 				local map = ww and Config.ComboMap[ww]
 				local list = map and map[kind]
 				if type(list) == "table" and #list > 0 then
 					local key = ww .. tostring(kind)
-					local i = (dbg._cidx[key] or 0) % #list + 1
-					dbg._cidx[key] = i
-					local name = list[i]
-					if kind == "Light" then
-						self:SetNextLightAttackName(name, 2)
-					else
-						self:SetNextHeavyAttackName(name, 2)
+					local start = dbg._cidx[key] or 0
+					local picked
+					for n = 1, #list do
+						local i = (start + n - 1) % #list + 1
+						local name = list[i]
+						if name and name ~= "none" and pack and pack.attacks and pack.attacks[name] then
+							picked = { i = i, name = name }
+							break
+						end
 					end
+					if picked then
+						if kind == "Light" then
+							self:SetNextLightAttackName(picked.name, 2)
+						else
+							self:SetNextHeavyAttackName(picked.name, 2)
+						end
+					end
+					local r = old(self, kind, ...)
+					if r and picked then
+						dbg._cidx[key] = picked.i
+					end
+					if r and Config.NoDelay then
+						dbg._ndApply(self)
+					end
+					return r
 				end
 			end
-			return old(self, kind, ...)
+			local r = old(self, kind, ...)
+			if r and Config.NoDelay then
+				dbg._ndApply(self)
+			end
+			return r
 		end
+	end
+	if not Config.NoDelay then
+		for _, atk in dbg._ndAtk do
+			if type(atk) == "table" and atk._dgapTS ~= nil then
+				atk.clientTransitionSpeed = atk._dgapTS
+				atk._dgapTS = nil
+			end
+		end
+		table.clear(dbg._ndAtk)
 	end
 	local spdMul = Config.DodgeSpeed or 1
 	local rngMul = Config.DodgeRange or 1
@@ -3102,7 +3174,7 @@ bind(RunService.RenderStepped, function(dt)
 	end
 	local threat = scanThreat(lh)
 	local now = os.clock()
-	pcall(stepCosmetics, now, lh)
+	stepCosmetics(now, lh)
 	if lh and lh.OriginalModel then
 		local hp = lh.OriginalModel:GetAttribute("Health")
 		if dbg.lastHp and hp and hp < dbg.lastHp - 0.4 then
@@ -3371,7 +3443,7 @@ bind(RunService.RenderStepped, function(dt)
 			parryLead += 0.02
 		end
 		local dodgeLead = Config.DodgeLead
-		local facing = isFacing(lh.Root, threat.root.Position, Config.FaceCone)
+		local facing = isFacing(lh.Root, threat.root.Position, Config.FaceCone or 38)
 		if not facing and threat.swing and not dbg.seen[threat.swing.uid .. ":face"] then
 			dbg.seen[threat.swing.uid .. ":face"] = true
 			clog("FACE_BLOCK", string.format("cone=%s remain=%.3f", tostring(Config.FaceCone), threat.remain), threat, lh)
@@ -3964,6 +4036,21 @@ function genv._DGAP.buildUI(ctx)
 		end
 		return el
 	end
+	local function boolToggle(section, name, flag, get, set, desc)
+		local el = section:Toggle({
+			Name = name,
+			Default = get() and true or false,
+			Callback = function(v)
+				set(v and true or false)
+				notify(name, v and "Enabled" or "Disabled")
+			end,
+		}, ctx.flag(flag))
+		els[flag] = el
+		if desc then
+			disc(section, desc)
+		end
+		return el
+	end
 	local function slider(section, o)
 		local el = section:Slider({
 			Name = o.Name,
@@ -4025,7 +4112,7 @@ function genv._DGAP.buildUI(ctx)
 			ComboOnly = false,
 			CustomCombo = false,
 			ParryChance = 1,
-			DodgeChance = 1,
+			DodgeChance = 0,
 			IntentionalBlock = false,
 			IntentionalBlockChance = 0,
 			HumanDelay = false,
@@ -4489,38 +4576,77 @@ function genv._DGAP.buildUI(ctx)
 				Config.AttackHelper = v
 			end,
 		})
-		enable(atL, "DG_PerfectDodgeCounter", function()
+		boolToggle(atL, "Perfect Dodge Counter", "DG_PerfectDodgeCounter", function()
 			return Config.PerfectDodgeCounter
 		end, function(v)
 			Config.PerfectDodgeCounter = v
 		end, "Hit after their dodge iframe dies.")
-		enable(atL, "DG_AHPunishBlock", function()
+		boolToggle(atL, "Punish Block", "DG_AHPunishBlock", function()
 			return Config.AHPunishBlock
 		end, function(v)
 			Config.AHPunishBlock = v
-		end, "Light (or DashLight) when they hold block past the parry window.")
-		enable(atL, "DG_AHPunishWhiff", function()
+		end, "Light or DashLight when they hold past the parry window.")
+		boolToggle(atL, "Punish Whiff", "DG_AHPunishWhiff", function()
 			return Config.AHPunishWhiff
 		end, function(v)
 			Config.AHPunishWhiff = v
 		end, "Light when they are in recovery after a miss.")
-		enable(atL, "DG_AHJumpChase", function()
+		boolToggle(atL, "Jump Chase", "DG_AHJumpChase", function()
 			return Config.AHJumpChase
 		end, function(v)
 			Config.AHJumpChase = v
 		end, "Jump+attack into a forward dodge.")
-		enable(atL, "DG_JumpAttackCounter", function()
+		boolToggle(atL, "Jump Attack Counter", "DG_JumpAttackCounter", function()
 			return Config.JumpAttackCounter
 		end, function(v)
 			Config.JumpAttackCounter = v
 		end, "Jump slam as a defensive counter.")
+		slider(atL, {
+			Name = "Helper Cooldown",
+			Flag = "DG_AHCooldown",
+			Default = Config.AHCooldown,
+			Min = 0.05,
+			Max = 0.6,
+			Precision = 2,
+			Suffix = "s",
+			Desc = "Min time between helper hits.",
+			Callback = function(v)
+				Config.AHCooldown = v
+			end,
+		})
+		slider(atL, {
+			Name = "Block Hold",
+			Flag = "DG_AHBlockHold",
+			Default = Config.AHBlockHold,
+			Min = 0,
+			Max = 0.25,
+			Precision = 2,
+			Suffix = "s",
+			Desc = "Wait this long into their block before punish.",
+			Callback = function(v)
+				Config.AHBlockHold = v
+			end,
+		})
+		slider(atL, {
+			Name = "Whiff Gate",
+			Flag = "DG_AHWhiffGate",
+			Default = Config.AHWhiffGate,
+			Min = 0.1,
+			Max = 1,
+			Precision = 2,
+			Suffix = "s",
+			Desc = "Helper idle time before a recovery punish.",
+			Callback = function(v)
+				Config.AHWhiffGate = v
+			end,
+		})
 
 		local atR = Attack:Section({ Side = "Right" })
 		atR:Header({ Name = "No Delay" })
 		feature(atR, {
 			Title = "No Delay",
 			Flag = "DG_NoDelay",
-			Desc = "Skips our HumanDelay on queued hits. Does not touch game predictionEndTime (that 3x-speeds the anim and cancels unconfirmed attacks).",
+			Desc = "Raises clientTransitionSpeed on the attack type so Start blend is ~0.012s instead of 0.1s. Does not zero predictionEndTime.",
 			get = function()
 				return Config.NoDelay
 			end,
