@@ -36,7 +36,7 @@ local Config = {
 	DodgeRange = 1,
 	DodgeCooldown = 0.4,
 	ParryChance = 1,
-	DodgeChance = 0,
+	DodgeChance = 1,
 	IntentionalBlock = false,
 	IntentionalBlockChance = 0,
 	HumanDelay = false,
@@ -87,12 +87,12 @@ local Config = {
 	AtmoDensity = 0.45,
 	AtmoHaze = 1.6,
 	AtmoColor = Color3.fromRGB(118, 142, 186),
-	AutoQueue = false,
-	QueueMode = "1v1",
 	ParrySound = true,
 	ParrySoundPreset = "SuccessFX",
 	ParrySoundVolume = 3.5,
 	AttackHelper = true,
+	AHPreset = "SemiLegit",
+	AHChance = 1,
 	PerfectDodgeCounter = true,
 	AHPunishBlock = true,
 	AHPunishWhiff = true,
@@ -2242,54 +2242,6 @@ function dodgeHold.atmo()
 	end
 end
 
-function dodgeHold.queueFire(force)
-	local mm = ReplicatedStorage:FindFirstChild("Remotes")
-	mm = mm and mm:FindFirstChild("Matchmaking")
-	local rem = mm and mm:FindFirstChild("RequestEnterQueue")
-	local mode = Config.QueueMode == "Ranked" and "ranked1v1" or "casual1v1"
-	local inMatch = LocalPlayer:GetAttribute("InMatch")
-	local st = ReplicatedStorage:GetAttribute("MM_State")
-	local ds = ReplicatedStorage:GetAttribute("ReservedDuelStatus")
-	local gm = ReplicatedStorage:GetAttribute("MM_Gamemode")
-	if force then
-		print(string.format("[DG-MM] pid=%s InMatch=%s MM_State=%s DuelStatus=%s Gamemode=%s rem=%s mode=%s auto=%s run=%s", tostring(game.PlaceId), tostring(inMatch), tostring(st), tostring(ds), tostring(gm), tostring(rem ~= nil), mode, tostring(Config.AutoQueue), tostring(running)))
-	end
-	if not rem then
-		return false, "no RequestEnterQueue"
-	end
-	if not force then
-		if not Config.AutoQueue or not running then
-			return false, "off"
-		end
-		if inMatch then
-			return false, "InMatch"
-		end
-		if st == "Searching" or st == "MatchFound" or st == "Starting" or st == "WaitingForPlayers" then
-			return false, "MM_State"
-		end
-		if ds == "Active" or ds == "Starting" or ds == "WaitingForPlayers" then
-			return false, "DuelStatus"
-		end
-		local now = os.clock()
-		if dodgeHold.qWait and now < dodgeHold.qWait then
-			return false, "wait"
-		end
-		if dodgeHold.qAt and now - dodgeHold.qAt < 6 then
-			return false, "throttle"
-		end
-	end
-	rem:FireServer(mode)
-	dodgeHold.qAt = os.clock()
-	if force then
-		print("[DG-MM] FireServer " .. mode)
-	end
-	return true, mode
-end
-
-function dodgeHold.queueTick()
-	dodgeHold.queueFire(false)
-end
-
 local function comboAttackName(lh, wantKind)
 	local am = lh and lh.ActionManager
 	local name
@@ -2922,6 +2874,13 @@ local function tryAttackHelper(lh, threat)
 	if not Config.AttackHelper or not lh or weStunned(lh) or pressed.kind then
 		return false
 	end
+	if dbg._repeat("ah") then
+		return false
+	end
+	local now = os.clock()
+	if dodgeHold.ahAt and now < dodgeHold.ahAt then
+		return true
+	end
 	if threat then
 		local an = tostring(threat.attack or "")
 		if an == "JumpAttack" or an == "Ultimate" or string.find(an, "Ultimate", 1, true) then
@@ -2938,7 +2897,7 @@ local function tryAttackHelper(lh, threat)
 		return false
 	end
 	local pad = pingPad()
-	local now = os.clock()
+	now = os.clock()
 	local ourW = equippedName(lh.OriginalModel)
 	local pack = type(ourW) == "string" and catalog[ourW]
 
@@ -2967,9 +2926,20 @@ local function tryAttackHelper(lh, threat)
 		end
 	end
 
-	local function fire(name, tag, model, root, remain, predPos, fromPos)
+	local function fire(name, tag, model, root, remain, predPos, fromPos, skipDelay)
 		if not attackHits(lh, name, root, model, predPos, fromPos) then
 			return false
+		end
+		if (Config.AHChance or 1) < 0.999 and rng:NextNumber() > Config.AHChance then
+			return false
+		end
+		if not skipDelay then
+			local delay = dbg._hd(0.22, 0.06)
+			if delay > 0.01 then
+				dodgeHold.ahAt = now + delay
+				dodgeHold.ahPend = { name = name, tag = tag, model = model, root = root, remain = remain, predPos = predPos, fromPos = fromPos }
+				return true
+			end
 		end
 		lastAH = now
 		aimAt(root)
@@ -2993,11 +2963,20 @@ local function tryAttackHelper(lh, threat)
 		}, lh)
 		if ok then
 			dbg.helper += 1
+			dbg._note("ah")
 			pressed.kind = "ah"
 			pressed.untilTime = now + hitT(name) + 0.04
 			pressed.rec = rec
 		end
 		return ok
+	end
+	if dodgeHold.ahPend and (not dodgeHold.ahAt or now >= dodgeHold.ahAt) then
+		local p = dodgeHold.ahPend
+		dodgeHold.ahPend = nil
+		dodgeHold.ahAt = nil
+		if p and p.name and p.root then
+			return fire(p.name, p.tag, p.model, p.root, p.remain, p.predPos, p.fromPos, true)
+		end
 	end
 
 	for _, model in CollectionService:GetTagged("CustomCharacter") do
@@ -3230,20 +3209,15 @@ local function tryAttackHelper(lh, threat)
 				local recede = recedingFrom(lh, root, vel)
 				if Config.AHPunishBlock and blocking and not blockPunished[model] then
 					local replicaAge = blockAge or 0
-					local standH = comboAttackName(lh, "Heavy")
 					local standL = nextL
-					local hitH = attackHits(lh, standH, root, model)
 					local hitL = attackHits(lh, standL, root, model)
 					local delay = replicaAge > 0.12 and 0.02 or (Config.AHBlockHold or 0.05)
 					if holdT >= delay then
 						blockPunished[model] = true
-						if hitH and fire(standH, "BLOCKPUNISH", model, root, 0) then
-							return true
-						end
 						if hitL and fire(standL, "BLOCKPUNISH", model, root, 0) then
 							return true
 						end
-						if not hitH and not hitL then
+						if not hitL then
 							local rec = { name = "DashLight", kind = "Light" }
 							if d <= ourReach(lh, rec.name) + travel * 0.65 then
 								if dodgeToward(lh, root.Position) then
@@ -3506,29 +3480,8 @@ local function styleIndex()
 	return 1
 end
 
-if MatchController and MatchController.MatchFinishedForLocalPlayer then
-	bind(MatchController.MatchFinishedForLocalPlayer, function()
-		dodgeHold.qWait = os.clock() + 1.4
-		dodgeHold.qAt = nil
-	end)
-end
-if MatchController and MatchController.MatchEndedForLocalPlayer then
-	bind(MatchController.MatchEndedForLocalPlayer, function()
-		dodgeHold.qWait = os.clock() + 0.8
-		dodgeHold.qAt = nil
-	end)
-end
-bind(LocalPlayer:GetAttributeChangedSignal("InMatch"), function()
-	if LocalPlayer:GetAttribute("InMatch") then
-		return
-	end
-	dodgeHold.qWait = os.clock() + 1.1
-	dodgeHold.qAt = nil
-end)
-
 bind(RunService.Heartbeat, function(dt)
 	dodgeHold.atmo()
-	dodgeHold.queueTick()
 	if not running or not Config.Enabled then
 		return
 	end
@@ -4301,6 +4254,9 @@ bind(RunService.RenderStepped, function(dt)
 			local doParry = Config.AutoParry and combatOn and (not threat.windup) and threat.canParry and threat.remain <= parryLead and threat.remain >= parryMin and canDef and pressed.kind == nil
 			local dodgeCover = ((threat.impN or 1) > 1) and (threat.lastRemain or threat.remain) or threat.remain
 			local dodgeDeclined = threat.swing and threat.swing.rolls and threat.swing.rolls.priDodge == false
+			if not dodgeDeclined then
+				dodgeDeclined = not rollSticky(threat.swing, "priDodge", Config.DodgeChance)
+			end
 			local dualParry = (threat.impN or 1) > 1 and threat.canParry
 			local amNow = lh.ActionManager
 			local lockedSwing = amNow and amNow.CurrentAction and amNow.CurrentAction.ActionType == "BasicAttack" and not amNow:CanStartDodge()
@@ -4312,24 +4268,40 @@ bind(RunService.RenderStepped, function(dt)
 			if pressed.kind == "wait" or pressed.kind == "block" then
 			elseif canDodgeNow then
 				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
-				local dodged, ddir = dodgeHold.go(lh, threat, threat.root.Position, jumpDist, recede, "plan", true)
-				if dodged then
-					dbg.dodge += 1 dbg._note("dodge")
-					lastDodgeAt = now
-					clog("DASHATK", string.format("prefer remain=%.3f last=%.3f dist=%.2f dir=%s recede=%s follow=%s escape=%s", threat.remain, threat.lastRemain or threat.remain, jumpDist, ddir, tostring(recede), pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
-				elseif doParry then
-					if rollSticky(threat.swing, "parry", Config.ParryChance) then
-						if pressGuard(lh) then
-							pressed.kind = "parry"
-							pressed.key = threat.key
-							pressed.swingId = threatSwingId(threat)
-							pressed.tapped = false
-							pressed.untilTime = parryUntil(now, threat, parryDur, jumpAtk)
-							dbg.parry += 1 dbg._note("parry")
-							if threat.swing and (threat.impN or 1) <= 1 then
-								threat.swing.handled = true
+				local follow = dodgeHold.ok(threat, threat.remain, dodgeHold.hit(lh))
+				local delay = 0
+				if not follow then
+					delay = dbg._hd(threat.remain, 0.05)
+				end
+				if delay > 0.01 then
+					pressed.pendKind = "dodge"
+					pressed.pendAt = now + delay
+					pressed.pendKey = threat.key
+					pressed.kind = "wait"
+					pressed.key = threat.key
+					pressed.untilTime = pressed.pendAt + 0.04
+				else
+					local dodged, ddir = dodgeHold.go(lh, threat, threat.root.Position, jumpDist, recede, "plan", follow)
+					if dodged then
+						dbg.dodge += 1
+						dbg._note("dodge")
+						lastDodgeAt = now
+						clog("DASHATK", string.format("prefer remain=%.3f last=%.3f dist=%.2f dir=%s recede=%s follow=%s escape=%s", threat.remain, threat.lastRemain or threat.remain, jumpDist, ddir, tostring(recede), pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
+					elseif doParry then
+						if rollSticky(threat.swing, "parry", Config.ParryChance) then
+							if pressGuard(lh) then
+								pressed.kind = "parry"
+								pressed.key = threat.key
+								pressed.swingId = threatSwingId(threat)
+								pressed.tapped = false
+								pressed.untilTime = parryUntil(now, threat, parryDur, jumpAtk)
+								dbg.parry += 1
+								dbg._note("parry")
+								if threat.swing and (threat.impN or 1) <= 1 then
+									threat.swing.handled = true
+								end
+								clog("PARRY_FALLBACK", string.format("dodge-miss remain=%.3f", threat.remain), threat, lh)
 							end
-							clog("PARRY_FALLBACK", string.format("dodge-miss remain=%.3f", threat.remain), threat, lh)
 						end
 					end
 				end
@@ -4810,7 +4782,7 @@ function genv._DGAP.buildUI(ctx)
 			ComboOnly = false,
 			CustomCombo = false,
 			ParryChance = 1,
-			DodgeChance = 0,
+			DodgeChance = 1,
 			IntentionalBlock = false,
 			IntentionalBlockChance = 0,
 			HumanDelay = false,
@@ -4820,10 +4792,14 @@ function genv._DGAP.buildUI(ctx)
 			ParryLead = 0,
 			DodgeLead = 0.22,
 			AttackHelper = true,
+			AHPreset = "SemiLegit",
+			AHChance = 1,
 			PerfectDodgeCounter = true,
 			AHPunishBlock = true,
 			AHPunishWhiff = true,
 			AHJumpChase = true,
+			AHCooldown = 0.18,
+			AHBlockHold = 0.05,
 			NoDelay = false,
 			Priority1 = "Heavy",
 			Priority2 = "Light",
@@ -4861,10 +4837,14 @@ function genv._DGAP.buildUI(ctx)
 			ParryLead = 0,
 			DodgeLead = 0.22,
 			AttackHelper = true,
+			AHPreset = "SemiLegit",
+			AHChance = 0.78,
 			PerfectDodgeCounter = true,
 			AHPunishBlock = true,
 			AHPunishWhiff = false,
 			AHJumpChase = false,
+			AHCooldown = 0.24,
+			AHBlockHold = 0.08,
 			NoDelay = false,
 			Priority1 = "Heavy",
 			Priority2 = "Light",
@@ -4902,10 +4882,14 @@ function genv._DGAP.buildUI(ctx)
 			ParryLead = 0,
 			DodgeLead = 0.22,
 			AttackHelper = true,
+			AHPreset = "Legit",
+			AHChance = 0.4,
 			PerfectDodgeCounter = true,
 			AHPunishBlock = true,
-			AHPunishWhiff = true,
+			AHPunishWhiff = false,
 			AHJumpChase = false,
+			AHCooldown = 0.34,
+			AHBlockHold = 0.12,
 			NoDelay = false,
 			Priority1 = "Heavy",
 			Priority2 = "Light",
@@ -5323,6 +5307,26 @@ function genv._DGAP.buildUI(ctx)
 				Config.AttackHelper = v
 			end,
 		})
+		local AH_PRESETS = {
+			SemiLegit = { AHChance = 0.78, AHCooldown = 0.24, AHBlockHold = 0.08, AHPunishWhiff = false, AHJumpChase = false },
+			Legit = { AHChance = 0.4, AHCooldown = 0.34, AHBlockHold = 0.12, AHPunishWhiff = false, AHJumpChase = false },
+		}
+		atL:Dropdown({
+			Name = "AH Preset",
+			Options = { "SemiLegit", "Legit" },
+			Default = Config.AHPreset or "SemiLegit",
+			Callback = function(v)
+				Config.AHPreset = v
+				local p = AH_PRESETS[v]
+				if p then
+					for k, val in p do
+						Config[k] = val
+						pushEl("DG_" .. k, val)
+					end
+				end
+			end,
+		}, ctx.flag("DG_AHPreset"))
+		disc(atL, "Semi = current helper, slower. Legit = less often, more delay.")
 		boolToggle(atL, "Perfect Dodge Counter", "DG_PerfectDodgeCounter", function()
 			return Config.PerfectDodgeCounter
 		end, function(v)
@@ -6086,33 +6090,6 @@ function genv._DGAP.buildUI(ctx)
 				end
 			end,
 		}, ctx.flag("DG_AtmoColor"))
-
-		local msQ = Misc:Section({ Side = "Right" })
-		msQ:Header({ Name = "Auto Matchmaking" })
-		enable(msQ, "DG_AutoQueue", function()
-			return Config.AutoQueue
-		end, function(v)
-			Config.AutoQueue = v
-			if v then
-				dodgeHold.qWait = os.clock() + 0.4
-				dodgeHold.qAt = nil
-			end
-		end, "After a 1v1/Ranked fight ends, queues again on this server.")
-		msQ:Dropdown({
-			Name = "Mode",
-			Options = { "1v1", "Ranked" },
-			Default = Config.QueueMode or "1v1",
-			Callback = function(v)
-				Config.QueueMode = v
-			end,
-		}, ctx.flag("DG_QueueMode"))
-		msQ:Button({
-			Name = "Queue Now",
-			Callback = function()
-				local ok, why = dodgeHold.queueFire(true)
-				notify("MM", ok and ("fired " .. tostring(why)) or tostring(why))
-			end,
-		})
 	end
 
 	-- ════════════════════════════════ Debug ════════════════════════════════
