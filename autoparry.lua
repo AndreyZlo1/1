@@ -2689,9 +2689,10 @@ local function tryAttackHelper(lh, threat)
 								end
 								end
 								end
+								end
 								if (jumping or swinging or (threat and threat.will and threat.model == model and not threat.windup)) and not dodgeAge then
-					continue
-				end
+								continue
+								end
 				local lockK = tostring(model)
 				if not dodgeAge then
 					ahDodgeLock[lockK] = nil
@@ -2984,7 +2985,6 @@ local function scanThreat(lh)
 								end
 							end
 						end
-					end
 				end
 				local am = handler and handler.ActionManager
 				local cur = am and am.CurrentAction
