@@ -28,9 +28,13 @@ local Config = {
 	ComboOnly = false,
 	CustomCombo = false,
 	ComboMap = {},
+	Priority1 = "Heavy",
+	Priority2 = "Light",
+	Priority3 = "Dodge+Attack",
+	Priority4 = "Parry",
 	DodgeSpeed = 1,
 	DodgeRange = 1,
-	DodgeCooldown = 0.15,
+	DodgeCooldown = 0.4,
 	ParryChance = 1,
 	DodgeChance = 0,
 	IntentionalBlock = false,
@@ -86,7 +90,7 @@ local Config = {
 	AHBlockHold = 0.05,
 	AHWhiffGate = 0.45,
 	StaffDetect = true,
-	CustomModel = true,
+	CustomModel = false,
 	CustomModelMaterial = "Glass",
 	CustomModelColor = Color3.fromRGB(186, 150, 255),
 	CustomModelTransparency = 0.18,
@@ -2083,6 +2087,12 @@ local function bestOfKind(lh, threat, wantKind, needBreak)
 		slack = -0.05
 	end
 	local function fits(name)
+		if type(name) ~= "string" or name == "none" then
+			return nil
+		end
+		if string.find(name, "Dash", 1, true) or name == "JumpAttack" or string.find(name, "Ultimate", 1, true) then
+			return nil
+		end
 		local rec = packAttackRec(pack, name)
 		if not rec or rec.kind ~= wantKind then
 			return nil
@@ -2090,11 +2100,36 @@ local function bestOfKind(lh, threat, wantKind, needBreak)
 		if rec.hit + pad > (threat.remain or 0) + slack then
 			return nil
 		end
-		local ok = needBreak and rec.sa >= (threat.superArmor or 0) or (not needBreak and rec.sa < (threat.superArmor or 0))
-		if not ok then
+		local theirSa = threat.superArmor or 0
+		if needBreak then
+			if rec.sa < theirSa then
+				return nil
+			end
+		elseif rec.sa >= theirSa then
 			return nil
 		end
 		return rec
+	end
+	if needBreak and Config.ComboMode ~= "GameCombo" then
+		local names = wantKind == "Heavy" and { "Heavy01", "Heavy02", "Heavy03" } or { "Light01", "Light02", "Light03", "Light04" }
+		if Config.CustomCombo then
+			local map = Config.ComboMap[w]
+			local list = map and map[wantKind]
+			if type(list) == "table" and #list > 0 then
+				names = list
+			end
+		end
+		local bestRec
+		for _, name in names do
+			local rec = fits(name)
+			if rec and (not bestRec or rec.hit < bestRec.hit) then
+				bestRec = rec
+			end
+		end
+		if bestRec then
+			return bestRec
+		end
+		return nil
 	end
 	local combo = comboAttackName(lh, wantKind)
 	if Config.CustomCombo then
@@ -2154,7 +2189,6 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 	local atkName = tostring(threat.attack)
 	local isUlt = atkName == "Ultimate" or string.find(atkName, "Ultimate", 1, true) ~= nil
 	local isJump = atkName == "JumpAttack"
-	local theirKind = attackKind(atkName)
 	if not Config.SmartInterrupt then
 		return false
 	end
@@ -2188,51 +2222,67 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 		local reach = rec.reach or 7
 		return jumpDist <= reach + 0.2
 	end
-	if Config.BreakHeavy then
-		local rec = bestOfKind(lh, threat, "Heavy", true)
-		if rec and inReach(rec) then
-			local p = take("heavy", rec, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
-			if p then
-				return p
+	local heavyRec = Config.BreakHeavy and bestOfKind(lh, threat, "Heavy", true)
+	local lightRec = Config.BreakLight and bestOfKind(lh, threat, "Light", true)
+	local function tryHeavy()
+		if heavyRec and inReach(heavyRec) then
+			return take("heavy", heavyRec, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
+		end
+		return nil
+	end
+	local function tryLight()
+		if lightRec and inReach(lightRec) then
+			return take("light", lightRec, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
+		end
+		return nil
+	end
+	local function tryDodgeAtk()
+		if not (Config.BreakDodge and Config.AutoDodge and threat.will and (not isUlt) and (not isJump)) then
+			return nil
+		end
+		if (threat.impN or 1) > 1 and Config.AutoParry and threat.canParry then
+			return nil
+		end
+		local rec = heavyRec or lightRec
+		if rec and not inReach(rec) and threat.remain > rec.hit + 0.30 then
+			local travel = dodgeTravel(lh)
+			local gap = jumpDist - (rec.reach or 7)
+			if gap > 0.5 and gap <= travel * 0.82 then
+				return take("gapclose", rec, Config.BreakDodgeChance, Config.BreakDodgeAbs, "gapclose")
 			end
 		end
+		if (threat.remain or 0) >= 0.05 then
+			return take("dodge", { name = "DashLight", kind = "Light" }, Config.BreakDodgeChance, Config.BreakDodgeAbs, "dashatk")
+		end
+		return nil
 	end
-	if Config.BreakLight and theirKind == "Light" then
-		local rec = bestOfKind(lh, threat, "Light", true)
-		if rec and (threat.remain or 0) >= rec.hit + 0.08 and inReach(rec) then
-			local p = take("light", rec, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
-			if p then
-				return p
+	local function tryJump()
+		if Config.BreakJump and Config.JumpAttackCounter and jumpReady then
+			return take("jump", nil, Config.BreakJumpChance, Config.BreakJumpAbs, "jump")
+		end
+		return nil
+	end
+	local order = {
+		Config.Priority1 or "Heavy",
+		Config.Priority2 or "Light",
+		Config.Priority3 or "Dodge+Attack",
+		Config.Priority4 or "Parry",
+	}
+	for _, step in order do
+		local p
+		if step == "Heavy" then
+			p = tryHeavy()
+		elseif step == "Light" then
+			p = tryLight()
+		elseif step == "Dodge+Attack" then
+			p = tryDodgeAtk()
+		elseif step == "Jump" then
+			p = tryJump()
+		elseif step == "Parry" then
+			if Config.AutoParry and threat.canParry then
+				return false
 			end
 		end
-	end
-	if Config.BreakDodge and Config.AutoDodge and threat.will and (not isUlt) and (not isJump) then
-		local nImp = threat.impN or 1
-		if not (nImp > 1 and Config.AutoParry and threat.canParry) then
-			local rec = bestOfKind(lh, threat, "Heavy", true)
-			if not rec and theirKind == "Light" then
-				rec = bestOfKind(lh, threat, "Light", true)
-			end
-			if rec and not inReach(rec) and threat.remain > rec.hit + 0.30 then
-				local travel = dodgeTravel(lh)
-				local gap = jumpDist - (rec.reach or 7)
-				if gap > 0.5 and gap <= travel * 0.82 then
-					local p = take("gapclose", rec, Config.BreakDodgeChance, Config.BreakDodgeAbs, "gapclose")
-					if p then
-						return p
-					end
-				end
-			end
-			if (threat.remain or 0) >= 0.05 then
-				local p = take("dodge", { name = "DashLight", kind = "Light" }, Config.BreakDodgeChance, Config.BreakDodgeAbs, "dashatk")
-				if p then
-					return p
-				end
-			end
-		end
-	end
-	if Config.BreakJump and Config.JumpAttackCounter and jumpReady then
-		local p = take("jump", nil, Config.BreakJumpChance, Config.BreakJumpAbs, "jump")
 		if p then
 			return p
 		end
@@ -3046,28 +3096,27 @@ bind(RunService.Heartbeat, function(dt)
 		am.TryQueueBasicAttack = function(self, kind, ...)
 			local ch = self.CharacterHandler
 			local cur = self.CurrentAction
-			local dash = false
-			if cur and cur.ActionType == "Dodge" then
-				dash = true
-			end
-			if ch and ch.IsDodging then
-				dash = true
-			end
+			local dodging = (cur and cur.ActionType == "Dodge") or (ch and ch.IsDodging == true)
 			local nxt = kind == "Heavy" and self._nextHeavyAttackName or self._nextLightAttackName
-			if nxt == "DashLight" or nxt == "DashHeavy" then
-				dash = true
-			end
-			if Config.CustomCombo and not dash and (kind == "Light" or kind == "Heavy") then
+			local follow = nxt == "DashLight" or nxt == "DashHeavy"
+			if Config.CustomCombo and not dodging and not follow and (kind == "Light" or kind == "Heavy") then
 				local ww = equippedName(self.CharacterHandler and self.CharacterHandler.OriginalModel)
 				local pack = ww and catalog[ww]
 				local map = ww and Config.ComboMap[ww]
 				local list = map and map[kind]
+				if type(list) ~= "table" or #list == 0 then
+					if kind == "Light" then
+						list = { "Light01", "Light02", "Light03", "Light04" }
+					else
+						list = { "Heavy01", "Heavy02", "Heavy03" }
+					end
+				end
 				if type(list) == "table" and #list > 0 then
 					local key = ww .. tostring(kind)
-					local start = dbg._cidx[key] or 0
+					local idx = dbg._cidx[key] or 1
 					local picked
-					for n = 1, #list do
-						local i = (start + n - 1) % #list + 1
+					for n = 0, #list - 1 do
+						local i = (idx - 1 + n) % #list + 1
 						local name = list[i]
 						if name and name ~= "none" and pack and pack.attacks and pack.attacks[name] then
 							picked = { i = i, name = name }
@@ -3083,7 +3132,7 @@ bind(RunService.Heartbeat, function(dt)
 					end
 					local r = old(self, kind, ...)
 					if r and picked then
-						dbg._cidx[key] = picked.i
+						dbg._cidx[key] = picked.i % #list + 1
 					end
 					if r and Config.NoDelay then
 						dbg._ndApply(self)
@@ -3108,6 +3157,12 @@ bind(RunService.Heartbeat, function(dt)
 		table.clear(dbg._ndAtk)
 	end
 	local spdMul = Config.DodgeSpeed or 1
+	if am and type(am._dodgeStaminaRecoverTime) == "number" then
+		local cd = Config.DodgeCooldown
+		if type(cd) == "number" and cd >= 0.05 then
+			am._dodgeStaminaRecoverTime = cd
+		end
+	end
 	if spdMul ~= 1 and lh.IsDodging and am then
 		local act = am.CurrentAction
 		if act and act.ActionType == "Dodge" and act.MovementProperties and act.MovementProperties.mode == "Slide" and act ~= dbg._dodgeAct then
@@ -3625,7 +3680,7 @@ bind(RunService.RenderStepped, function(dt)
 			end
 			local parryMin = jumpAtk and 0.008 or 0.028
 			local canDef = pressed.kind == nil or pressed.kind == "ah" or pressed.kind == "interrupt"
-			if Config.IntentionalBlock and Config.AutoParry and combatOn and (not threat.windup) and threat.canParry and canDef and threat.remain > parryDur + 0.05 then
+			if Config.IntentionalBlock and Config.AutoParry and combatOn and (not threat.windup) and threat.canParry and canDef and threat.remain > parryDur + 0.05 and threat.attack ~= "Ultimate" and not (type(threat.attack) == "string" and string.find(threat.attack, "Ultimate", 1, true)) then
 				if not rollSticky(threat.swing, "parry", Config.ParryChance) then
 					if rollSticky(threat.swing, "block", Config.IntentionalBlockChance) then
 						local delay = dbg._hd(threat.remain, parryDur + 0.05)
@@ -4131,6 +4186,10 @@ function genv._DGAP.buildUI(ctx)
 			AHPunishWhiff = true,
 			AHJumpChase = true,
 			NoDelay = false,
+			Priority1 = "Heavy",
+			Priority2 = "Light",
+			Priority3 = "Dodge+Attack",
+			Priority4 = "Parry",
 		},
 		SemiLegit = {
 			AutoParry = true,
@@ -4167,6 +4226,10 @@ function genv._DGAP.buildUI(ctx)
 			AHPunishWhiff = false,
 			AHJumpChase = false,
 			NoDelay = false,
+			Priority1 = "Heavy",
+			Priority2 = "Light",
+			Priority3 = "Dodge+Attack",
+			Priority4 = "Parry",
 		},
 		Legit = {
 			AutoParry = true,
@@ -4203,6 +4266,10 @@ function genv._DGAP.buildUI(ctx)
 			AHPunishWhiff = true,
 			AHJumpChase = false,
 			NoDelay = false,
+			Priority1 = "Heavy",
+			Priority2 = "Light",
+			Priority3 = "Dodge+Attack",
+			Priority4 = "Parry",
 		},
 	}
 	local presetGuard = false
@@ -4363,7 +4430,40 @@ function genv._DGAP.buildUI(ctx)
 
 	local apPlay = AutoParry:Section({ Side = "Right" })
 	apPlay:Header({ Name = "AutoPlay" })
-	disc(apPlay, "Priority: Heavy, Light, Dodge+Attack, then Parry.")
+	disc(apPlay, "If several options fit, higher slot wins.")
+	local priOpts = { "Heavy", "Light", "Dodge+Attack", "Parry", "Jump" }
+	els.DG_Priority1 = apPlay:Dropdown({
+		Name = "1st",
+		Options = priOpts,
+		Default = Config.Priority1 or "Heavy",
+		Callback = function(v)
+			Config.Priority1 = v
+		end,
+	}, ctx.flag("DG_Priority1"))
+	els.DG_Priority2 = apPlay:Dropdown({
+		Name = "2nd",
+		Options = priOpts,
+		Default = Config.Priority2 or "Light",
+		Callback = function(v)
+			Config.Priority2 = v
+		end,
+	}, ctx.flag("DG_Priority2"))
+	els.DG_Priority3 = apPlay:Dropdown({
+		Name = "3rd",
+		Options = priOpts,
+		Default = Config.Priority3 or "Dodge+Attack",
+		Callback = function(v)
+			Config.Priority3 = v
+		end,
+	}, ctx.flag("DG_Priority3"))
+	els.DG_Priority4 = apPlay:Dropdown({
+		Name = "4th",
+		Options = priOpts,
+		Default = Config.Priority4 or "Parry",
+		Callback = function(v)
+			Config.Priority4 = v
+		end,
+	}, ctx.flag("DG_Priority4"))
 	enable(apPlay, "DG_SmartInterrupt", function()
 		return Config.SmartInterrupt
 	end, function(v)
@@ -4862,7 +4962,7 @@ function genv._DGAP.buildUI(ctx)
 			Max = 1.5,
 			Precision = 2,
 			Suffix = "s",
-			Desc = "Wait between script dodges.",
+			Desc = "Dodge stamina regen. 0.4 = vanilla.",
 			Callback = function(v)
 				Config.DodgeCooldown = v
 			end,
