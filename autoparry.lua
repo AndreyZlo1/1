@@ -2186,9 +2186,6 @@ end
 
 local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpReach)
 	local swing = threat.swing
-	local atkName = tostring(threat.attack)
-	local isUlt = atkName == "Ultimate" or string.find(atkName, "Ultimate", 1, true) ~= nil
-	local isJump = atkName == "JumpAttack"
 	if not Config.SmartInterrupt then
 		return false
 	end
@@ -2225,19 +2222,19 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 	local heavyRec = Config.BreakHeavy and bestOfKind(lh, threat, "Heavy", true)
 	local lightRec = Config.BreakLight and bestOfKind(lh, threat, "Light", true)
 	local function tryHeavy()
-		if heavyRec and inReach(heavyRec) then
+		if heavyRec and inReach(heavyRec) and canStartInterrupt(lh) then
 			return take("heavy", heavyRec, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
 		end
 		return nil
 	end
 	local function tryLight()
-		if lightRec and inReach(lightRec) then
+		if lightRec and inReach(lightRec) and canStartInterrupt(lh) then
 			return take("light", lightRec, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
 		end
 		return nil
 	end
 	local function tryDodgeAtk()
-		if not (Config.BreakDodge and Config.AutoDodge and threat.will and (not isUlt) and (not isJump)) then
+		if not (Config.BreakDodge and Config.AutoDodge and threat.will) then
 			return nil
 		end
 		if (threat.impN or 1) > 1 and Config.AutoParry and threat.canParry then
@@ -2251,7 +2248,7 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 				return take("gapclose", rec, Config.BreakDodgeChance, Config.BreakDodgeAbs, "gapclose")
 			end
 		end
-		if (threat.remain or 0) >= 0.05 then
+		if (threat.remain or 0) >= 0.018 then
 			return take("dodge", { name = "DashLight", kind = "Light" }, Config.BreakDodgeChance, Config.BreakDodgeAbs, "dashatk")
 		end
 		return nil
@@ -3522,7 +3519,7 @@ bind(RunService.RenderStepped, function(dt)
 		local ourLand = 0.08 + jumpHit
 		local cancelR = threat.cancelRemain or (threat.remain + 0.35)
 		local jumpOk = Config.JumpAttackCounter and facing and pressed.kind == nil and jumpDist >= 0 and jumpDist <= jumpReach + 1.4 and threat.remain >= 0.12 and ourLand < cancelR - 0.05 and lh.ActionManager and lh.ActionManager:CanQueueJump()
-		local punished = weStunned(lh) or (now - lastTakenAt) < 0.45
+		local punished = weStunned(lh)
 		local plan = planBreak(lh, threat, facing, jumpOk, jumpHit, jumpDist, jumpReach)
 		if punished and plan and (plan.kind == "light" or plan.kind == "heavy" or plan.kind == "gapclose") then
 			plan = nil
@@ -3637,7 +3634,7 @@ bind(RunService.RenderStepped, function(dt)
 			elseif threat.swing then
 				threat.swing.breakPlan = false
 			end
-		elseif plan and plan.kind == "dodge" and threat.will and coverRemain <= 0.26 and (threat.remain > parryLead or not threat.canParry) and pressed.kind == nil then
+		elseif plan and plan.kind == "dodge" and threat.will and coverRemain <= 0.26 and pressed.kind == nil then
 			local delay = dbg._hd(threat.remain, 0.04)
 			if delay > 0.01 then
 				pressed.pendKind = "dodge"
@@ -3743,11 +3740,23 @@ bind(RunService.RenderStepped, function(dt)
 						end
 					end
 				else
-					dbg.skip += 1
-					clog("PARRY_SKIP", "chance roll", threat, lh)
-					pressed.kind = "skip"
-					pressed.key = threat.key
-					pressed.untilTime = now + 0.2
+					if Config.AutoDodge and combatOn and dodgeCover <= 0.26 and threat.remain >= 0.018 then
+						local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
+						local dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, recede)
+						if dodged then
+							pressed.kind = "dashatk"
+							pressed.key = threat.key
+							pressed.untilTime = now + 0.42
+							pressed.at = now
+							pressed.from = "parry-skip"
+							pressed.rec = { name = "DashLight", kind = "Light" }
+							dbg.dodge += 1
+							clog("DASHATK", string.format("parry-skip remain=%.3f dir=%s", threat.remain, ddir), threat, lh)
+						end
+					else
+						dbg.skip += 1
+						clog("PARRY_SKIP", "chance roll", threat, lh)
+					end
 				end
 			elseif (not doParry) and doDodge and pressed.kind ~= "dodge" then
 				local delay = dbg._hd(threat.remain, 0.03)
