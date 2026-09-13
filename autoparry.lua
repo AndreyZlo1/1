@@ -42,6 +42,7 @@ local Config = {
 	HumanDelay = false,
 	HumanDelayMin = 0,
 	HumanDelayMax = 0,
+	NoRepeat = false,
 	EspStyle = "Soul",
 	EspColorA = Color3.fromRGB(70, 230, 255),
 	EspColorB = Color3.fromRGB(190, 80, 255),
@@ -2082,7 +2083,7 @@ local function bestOfKind(lh, threat, wantKind, needBreak)
 	if isUlt then
 		pad = 0.10
 	end
-	local slack = 0.02
+	local slack = 0
 	if wantKind == "Heavy" and (isUlt or string.find(atkName, "Heavy", 1, true)) then
 		slack = -0.05
 	end
@@ -2265,22 +2266,38 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 		Config.Priority3 or "Dodge+Attack",
 		Config.Priority4 or "Parry",
 	}
-	for _, step in order do
-		local p
-		if step == "Heavy" then
-			p = tryHeavy()
-		elseif step == "Light" then
-			p = tryLight()
-		elseif step == "Dodge+Attack" then
-			p = tryDodgeAtk()
-		elseif step == "Jump" then
-			p = tryJump()
-		elseif step == "Parry" then
-			if Config.AutoParry and threat.canParry then
-				return false
+	local function runOrder(allowRepeat)
+		for _, step in order do
+			local key = step == "Dodge+Attack" and "dodge" or string.lower(step)
+			if allowRepeat or not dbg._repeat(key) then
+				local p
+				if step == "Heavy" then
+					p = tryHeavy()
+				elseif step == "Light" then
+					p = tryLight()
+				elseif step == "Dodge+Attack" then
+					p = tryDodgeAtk()
+				elseif step == "Jump" then
+					p = tryJump()
+				elseif step == "Parry" then
+					if Config.AutoParry and threat.canParry then
+						return false
+					end
+				end
+				if p then
+					return p
+				end
 			end
 		end
-		if p then
+		return nil
+	end
+	local p = runOrder(false)
+	if p ~= nil then
+		return p
+	end
+	if Config.NoRepeat then
+		p = runOrder(true)
+		if p ~= nil then
 			return p
 		end
 	end
@@ -2406,6 +2423,7 @@ local dbg = {
 	lastThreat = "",
 	_cidx = {},
 	_ndAtk = {},
+	_hist = {},
 }
 
 dbg._hd = function(remain, needRemain)
@@ -2426,6 +2444,39 @@ dbg._hd = function(remain, needRemain)
 		d = slack * (0.4 + rng:NextNumber() * 0.45)
 	end
 	return d
+end
+
+dbg._note = function(kind)
+	if type(kind) ~= "string" then
+		return
+	end
+	local h = dbg._hist
+	h[#h + 1] = kind
+	while #h > 8 do
+		table.remove(h, 1)
+	end
+end
+
+dbg._repeat = function(kind)
+	if not Config.NoRepeat then
+		return false
+	end
+	local h = dbg._hist
+	local n = #h
+	if n < 3 then
+		return false
+	end
+	if h[n] == kind and h[n - 1] == kind then
+		return true
+	end
+	local window = math.min(n, 6)
+	local c = 0
+	for i = n - window + 1, n do
+		if h[i] == kind then
+			c += 1
+		end
+	end
+	return c >= math.max(3, math.ceil(window * 0.5))
 end
 
 dbg._ndApply = function(am)
@@ -3424,7 +3475,7 @@ bind(RunService.RenderStepped, function(dt)
 					end
 					local pDur = 0.13333333333333333 + 0.1 * math.clamp(strength, 0, 1)
 					pressed.untilTime = parryUntil(now, threat, pDur, threat.attack == "JumpAttack")
-					dbg.parry += 1
+					dbg.parry += 1 dbg._note("parry")
 					if threat.swing and (threat.impN or 1) <= 1 then
 						threat.swing.handled = true
 					end
@@ -3457,7 +3508,7 @@ bind(RunService.RenderStepped, function(dt)
 					pressed.at = now
 					pressed.from = "plan"
 					pressed.rec = { name = "DashLight", kind = "Light" }
-					dbg.dodge += 1
+					dbg.dodge += 1 dbg._note("dodge")
 					lastDodgeAt = now
 					clog("DASHATK", string.format("delayed remain=%.3f dir=%s", threat.remain, ddir), threat, lh)
 				else
@@ -3470,6 +3521,7 @@ bind(RunService.RenderStepped, function(dt)
 					pressed.untilTime = now + prec.hit + 0.08
 					pressed.rec = prec
 					dbg.interrupt += 1
+					dbg._note((prec.kind == "Heavy" or prec.kind == "heavy") and "heavy" or "light")
 					if threat.swing then
 						threat.swing.handled = true
 					end
@@ -3552,7 +3604,7 @@ bind(RunService.RenderStepped, function(dt)
 				pressed.rec = plan.rec
 				pressed.key = threat.key
 				pressed.untilTime = now + 0.38
-				dbg.dodge += 1
+				dbg.dodge += 1 dbg._note("dodge")
 				if threat.swing then
 					threat.swing.handled = true
 				end
@@ -3582,6 +3634,7 @@ bind(RunService.RenderStepped, function(dt)
 					clog("INTERRUPT_TRY", string.format("ok=%s name=%s ourHit=%.3f their=%.3f ourSa=%.0f theirSa=%.0f kind=%s cur=%s", tostring(ok), plan.rec.name, plan.rec.hit, threat.remain, plan.rec.sa, threat.superArmor or 0, plan.kind, curActName(lh)), threat, lh)
 					if ok then
 						dbg.interrupt += 1
+						dbg._note(plan.kind == "heavy" and "heavy" or "light")
 						pressed.kind = "interrupt"
 						pressed.key = threat.key
 						pressed.untilTime = now + plan.rec.hit + 0.08
@@ -3605,7 +3658,7 @@ bind(RunService.RenderStepped, function(dt)
 						pressed.swingId = threatSwingId(threat)
 						pressed.tapped = false
 						pressed.untilTime = parryUntil(now, threat, parryDur, jumpAtk)
-						dbg.parry += 1
+						dbg.parry += 1 dbg._note("parry")
 						if threat.swing and (threat.impN or 1) <= 1 then
 							threat.swing.handled = true
 						end
@@ -3653,7 +3706,7 @@ bind(RunService.RenderStepped, function(dt)
 					pressed.at = now
 					pressed.from = "plan"
 					pressed.rec = punished and nil or { name = "DashLight", kind = "Light" }
-					dbg.dodge += 1
+					dbg.dodge += 1 dbg._note("dodge")
 					lastDodgeAt = now
 					clog("DASHATK", string.format("iframe-cover remain=%.3f last=%.3f dist=%.2f dir=%s recede=%s", threat.remain, threat.lastRemain or threat.remain, jumpDist, ddir, tostring(recede)), threat, lh)
 				end
@@ -3723,7 +3776,7 @@ bind(RunService.RenderStepped, function(dt)
 						pressed.swingId = threatSwingId(threat)
 						pressed.tapped = false
 						pressed.untilTime = parryUntil(now, threat, parryDur, jumpAtk)
-						dbg.parry += 1
+						dbg.parry += 1 dbg._note("parry")
 						if threat.swing and (threat.impN or 1) <= 1 then
 							threat.swing.handled = true
 						end
@@ -3735,7 +3788,7 @@ bind(RunService.RenderStepped, function(dt)
 							pressed.kind = "dodge"
 							pressed.key = threat.key
 							pressed.untilTime = now + 0.32
-							dbg.dodge += 1
+							dbg.dodge += 1 dbg._note("dodge")
 							clog("DODGE", string.format("jump-fallback remain=%.3f dir=%s recede=%s", threat.remain, ddir, tostring(recede)), threat, lh)
 						end
 					end
@@ -3750,7 +3803,7 @@ bind(RunService.RenderStepped, function(dt)
 							pressed.at = now
 							pressed.from = "parry-skip"
 							pressed.rec = { name = "DashLight", kind = "Light" }
-							dbg.dodge += 1
+							dbg.dodge += 1 dbg._note("dodge")
 							clog("DASHATK", string.format("parry-skip remain=%.3f dir=%s", threat.remain, ddir), threat, lh)
 						end
 					else
@@ -3774,7 +3827,7 @@ bind(RunService.RenderStepped, function(dt)
 						pressed.kind = "dodge"
 						pressed.key = threat.key
 						pressed.untilTime = now + math.max(0.32, (threat.lastRemain or 0) + 0.04)
-						dbg.dodge += 1
+						dbg.dodge += 1 dbg._note("dodge")
 						if threat.swing and (threat.impIndex or 1) >= (threat.impN or 1) then
 							threat.swing.handled = true
 						end
@@ -4187,6 +4240,7 @@ function genv._DGAP.buildUI(ctx)
 			HumanDelay = false,
 			HumanDelayMin = 0,
 			HumanDelayMax = 0,
+			NoRepeat = false,
 			ParryLead = 0,
 			DodgeLead = 0.22,
 			AttackHelper = true,
@@ -4227,6 +4281,7 @@ function genv._DGAP.buildUI(ctx)
 			HumanDelay = true,
 			HumanDelayMin = 0.018,
 			HumanDelayMax = 0.042,
+			NoRepeat = false,
 			ParryLead = 0,
 			DodgeLead = 0.22,
 			AttackHelper = true,
@@ -4267,6 +4322,7 @@ function genv._DGAP.buildUI(ctx)
 			HumanDelay = true,
 			HumanDelayMin = 0.032,
 			HumanDelayMax = 0.078,
+			NoRepeat = true,
 			ParryLead = 0,
 			DodgeLead = 0.22,
 			AttackHelper = true,
@@ -4406,7 +4462,7 @@ function genv._DGAP.buildUI(ctx)
 	})
 
 	local apDelay = AutoParry:Section({ Side = "Left" })
-	apDelay:Header({ Name = "Human Delay" })
+	apDelay:Header({ Name = "Humanize" })
 	enable(apDelay, "DG_HumanDelay", function()
 		return Config.HumanDelay
 	end, function(v)
@@ -4436,6 +4492,11 @@ function genv._DGAP.buildUI(ctx)
 			Config.HumanDelayMax = v
 		end,
 	})
+	enable(apDelay, "DG_NoRepeat", function()
+		return Config.NoRepeat
+	end, function(v)
+		Config.NoRepeat = v
+	end, "Skips a defense if it was used too much recently.")
 
 	local apPlay = AutoParry:Section({ Side = "Right" })
 	apPlay:Header({ Name = "AutoPlay" })
