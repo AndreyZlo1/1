@@ -3208,15 +3208,20 @@ local function tryAttackHelper(lh, threat)
 				local recede = recedingFrom(lh, root, vel)
 				if Config.AHPunishBlock and blocking and not blockPunished[model] then
 					local replicaAge = blockAge or 0
-					local standR = ourReach(lh, nextL)
-					local standOk = d <= standR
+					local standH = comboAttackName(lh, "Heavy")
+					local standL = nextL
+					local hitH = attackHits(lh, standH, root, model)
+					local hitL = attackHits(lh, standL, root, model)
 					local delay = replicaAge > 0.12 and 0.02 or (Config.AHBlockHold or 0.05)
 					if holdT >= delay then
 						blockPunished[model] = true
-						if standOk and fire(nextL, "BLOCKPUNISH", model, root, 0) then
+						if hitH and fire(standH, "BLOCKPUNISH", model, root, 0) then
 							return true
 						end
-						if not standOk then
+						if hitL and fire(standL, "BLOCKPUNISH", model, root, 0) then
+							return true
+						end
+						if not hitH and not hitL then
 							local rec = { name = "DashLight", kind = "Light" }
 							if d <= ourReach(lh, rec.name) + travel * 0.65 then
 								if dodgeToward(lh, root.Position) then
@@ -4015,6 +4020,12 @@ bind(RunService.RenderStepped, function(dt)
 			parryLead += 0.02
 		end
 		local dodgeLead = Config.DodgeLead
+		if type(dodgeLead) ~= "number" or dodgeLead < 0.08 then
+			dodgeLead = 0.22
+		end
+		if dodgeLead > DODGE_IFRAME then
+			dodgeLead = DODGE_IFRAME
+		end
 		local facing = isFacing(lh.Root, threat.root.Position, Config.FaceCone or 38)
 		if not facing and threat.swing and not dbg.seen[threat.swing.uid .. ":face"] then
 			dbg.seen[threat.swing.uid .. ":face"] = true
@@ -4048,14 +4059,14 @@ bind(RunService.RenderStepped, function(dt)
 		local waiting = false
 		local coverRemain = ((threat.impN or 1) > 1) and (threat.lastRemain or threat.remain) or threat.remain
 		if plan then
-			if plan.kind == "dodge" and coverRemain > DODGE_IFRAME then
+			if plan.kind == "dodge" and coverRemain > dodgeLead then
 				waiting = true
 			elseif plan.kind == "jump" and not jumpOk and (threat.tpos or 0) < 0.08 then
 				waiting = true
 			end
 		end
 		if pressed.kind == "chain" then
-			if coverRemain <= DODGE_IFRAME and threat.will and not weStunned(lh) and not lh.IsDodging and lh.ActionManager and lh.ActionManager:CanStartDodge() then
+			if coverRemain <= dodgeLead and threat.will and not weStunned(lh) and not lh.IsDodging and lh.ActionManager and lh.ActionManager:CanStartDodge() then
 				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
 				local dodged, ddir = dodgeHold.go(lh, threat, threat.root.Position, jumpDist, recede, "chain", true)
 				if dodged then
@@ -4167,7 +4178,7 @@ bind(RunService.RenderStepped, function(dt)
 			elseif threat.swing then
 				threat.swing.breakPlan = false
 			end
-		elseif plan and plan.kind == "dodge" and threat.will and coverRemain <= DODGE_IFRAME and pressed.kind == nil then
+		elseif plan and plan.kind == "dodge" and threat.will and coverRemain <= dodgeLead and pressed.kind == nil then
 			local delay = dbg._hd(threat.remain, 0.04)
 			if delay > 0.01 then
 				pressed.pendKind = "dodge"
@@ -4274,8 +4285,8 @@ bind(RunService.RenderStepped, function(dt)
 			if lockedSwing then
 				doParry = false
 			end
-			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeCover <= DODGE_IFRAME and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and (dodgeHold.ok(threat, threat.remain, dodgeHold.hit(lh)) or threat.remain > parryLead)
-			local doDodge = Config.AutoDodge and combatOn and (not threat.windup) and dodgeCover <= DODGE_IFRAME and threat.remain >= 0.018 and (not threat.canParry or threat.remain < 0.04 or not Config.AutoParry or jumpAtk) and canDef and not dodgeDeclined
+			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and (dodgeHold.ok(threat, threat.remain, dodgeHold.hit(lh)) or threat.remain > parryLead)
+			local doDodge = Config.AutoDodge and combatOn and (not threat.windup) and dodgeCover <= dodgeLead and threat.remain >= 0.018 and (not threat.canParry or threat.remain < 0.04 or not Config.AutoParry or jumpAtk) and canDef and not dodgeDeclined
 			if pressed.kind == "wait" or pressed.kind == "block" then
 			elseif canDodgeNow then
 				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
@@ -4321,7 +4332,7 @@ bind(RunService.RenderStepped, function(dt)
 							threat.swing.handled = true
 						end
 						clog("PARRY", string.format("remain=%.3f last=%.3f imp=%s/%s lead=%.3f chance=%.2f", threat.remain, threat.lastRemain or threat.remain, tostring(threat.impIndex or 1), tostring(threat.impN or 1), parryLead, Config.ParryChance), threat, lh)
-					elseif jumpAtk and Config.AutoDodge and dodgeCover <= DODGE_IFRAME then
+					elseif jumpAtk and Config.AutoDodge and dodgeCover <= dodgeLead then
 						local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
 						local dodged = dodgeHold.free(lh)
 						if dodged then
@@ -4333,7 +4344,7 @@ bind(RunService.RenderStepped, function(dt)
 						end
 					end
 				else
-					if Config.AutoDodge and combatOn and dodgeCover <= DODGE_IFRAME and threat.remain >= 0.018 then
+					if Config.AutoDodge and combatOn and dodgeCover <= dodgeLead and threat.remain >= 0.018 then
 						local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
 						local dodged, ddir = dodgeHold.go(lh, threat, threat.root.Position, jumpDist, recede, "parry-skip", true)
 						if dodged then
