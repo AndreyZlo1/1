@@ -2353,7 +2353,7 @@ local dbg = {
 }
 
 dbg._hd = function(remain, needRemain)
-	if not Config.HumanDelay then
+	if Config.NoDelay or not Config.HumanDelay then
 		return 0
 	end
 	local lo = Config.HumanDelayMin or 0.016
@@ -2999,53 +2999,44 @@ bind(RunService.Heartbeat, function(dt)
 	end
 	local w = tostring(lh.EquippedWeapon)
 	local want = Config.WeaponSkins[w]
-	if type(want) == "string" and want ~= "" then
+	if type(want) == "string" and want ~= "" and want ~= "Default" then
 		local tag = want .. ":" .. w
 		if tag ~= lastSkin then
 			applySkin(want)
 		end
 	end
 	local am = lh.ActionManager
-	if am and not dbg._tqHook and type(am.TryQueueBasicAttack) == "function" then
-		dbg._tqHook = true
+	if Config.CustomCombo and am and not am._dgapWrap and type(am.TryQueueBasicAttack) == "function" then
+		am._dgapWrap = true
 		local old = am.TryQueueBasicAttack
-		pcall(function()
-			hookfunction(old, function(self, kind, ...)
-				if Config.CustomCombo and (kind == "Light" or kind == "Heavy") then
-					local ww = equippedName(self.CharacterHandler and self.CharacterHandler.OriginalModel)
-					local map = ww and Config.ComboMap[ww]
-					local list = map and map[kind]
-					if type(list) == "table" and #list > 0 then
-						local key = ww .. tostring(kind)
-						local i = (dbg._cidx[key] or 0) % #list + 1
-						dbg._cidx[key] = i
-						local name = list[i]
-						if kind == "Light" then
-							self:SetNextLightAttackName(name, 2)
-						else
-							self:SetNextHeavyAttackName(name, 2)
-						end
+		am.TryQueueBasicAttack = function(self, kind, ...)
+			if kind == "Light" or kind == "Heavy" then
+				local ww = equippedName(self.CharacterHandler and self.CharacterHandler.OriginalModel)
+				local map = ww and Config.ComboMap[ww]
+				local list = map and map[kind]
+				if type(list) == "table" and #list > 0 then
+					local key = ww .. tostring(kind)
+					local i = (dbg._cidx[key] or 0) % #list + 1
+					dbg._cidx[key] = i
+					local name = list[i]
+					if kind == "Light" then
+						self:SetNextLightAttackName(name, 2)
+					else
+						self:SetNextHeavyAttackName(name, 2)
 					end
 				end
-				local r = old(self, kind, ...)
-				if Config.NoDelay and type(self._queuedActionProperties) == "table" then
-					self._queuedActionProperties.predictionEndTime = os.clock()
-				end
-				return r
-			end)
-		end)
-	end
-	if lh.IsDodging and am then
-		local act = am.CurrentAction
-		if act and act.ActionType == "Dodge" and act.MovementProperties then
-			local wname = equippedName(lh.OriginalModel)
-			local base = 1
-			if type(wname) == "string" and catalog[wname] then
-				base = catalog[wname].dodgeDist or 1
 			end
-			local dd = base * (Config.DodgeRange or 1)
-			act.DodgeDistance = dd
-			local v = 40 * dd * (Config.DodgeSpeed or 1)
+			return old(self, kind, ...)
+		end
+	end
+	local spdMul = Config.DodgeSpeed or 1
+	local rngMul = Config.DodgeRange or 1
+	if (spdMul ~= 1 or rngMul ~= 1) and lh.IsDodging and am then
+		local act = am.CurrentAction
+		if act and act.ActionType == "Dodge" and act.MovementProperties and act.MovementProperties.mode == "Slide" and act ~= dbg._dodgeAct then
+			dbg._dodgeAct = act
+			local dd = act.DodgeDistance or 1
+			local v = 40 * dd * rngMul * spdMul
 			act.MovementProperties.velocity = v
 			act.MovementProperties.velocityDecay = v * 1.5
 		end
@@ -3062,21 +3053,23 @@ bind(RunService.Heartbeat, function(dt)
 		end
 	end
 	if Config.NoSlowdown and not lh.IsDodging then
-		local hum = lh.Humanoid
-		local spd = 17
-		local wh = weaponHandler(lh)
-		if wh and wh.WeaponInfo and type(wh.WeaponInfo.RunSpeed) == "number" then
-			spd = wh.WeaponInfo.RunSpeed
-		end
-		if hum and (hum.WalkSpeed or 0) < spd * 0.92 then
-			hum.WalkSpeed = spd
+		local cur = am and am.CurrentAction
+		if not (cur and cur.MovementProperties) then
+			local hum = lh.Humanoid
+			local spd = 17
+			local wh = weaponHandler(lh)
+			if wh and wh.WeaponInfo and type(wh.WeaponInfo.RunSpeed) == "number" then
+				spd = wh.WeaponInfo.RunSpeed
+			end
+			if hum and (hum.WalkSpeed or 0) < spd * 0.92 then
+				hum.WalkSpeed = spd
+			end
 		end
 	end
 	if Config.Speed and lh.Root then
 		local dir = lh.DesiredMoveDirection
 		if typeof(dir) == "Vector3" and dir.Magnitude > 0.05 then
-			local step = dir.Unit * (Config.SpeedValue or 32) * dt
-			lh.Root.CFrame = lh.Root.CFrame + step
+			lh.Root.CFrame = lh.Root.CFrame + dir.Unit * (Config.SpeedValue or 32) * dt
 		end
 	end
 	if Config.NoClip then
@@ -3085,14 +3078,6 @@ bind(RunService.Heartbeat, function(dt)
 		end
 		if lh.RemoteCollider then
 			lh.RemoteCollider.CanCollide = false
-		end
-		local vis = lh.Model or lh.OriginalModel
-		if vis then
-			for _, d in vis:GetDescendants() do
-				if d:IsA("BasePart") then
-					d.CanCollide = false
-				end
-			end
 		end
 	end
 	if Config.GodMode then
@@ -4053,7 +4038,7 @@ function genv._DGAP.buildUI(ctx)
 			AHPunishBlock = true,
 			AHPunishWhiff = true,
 			AHJumpChase = true,
-			NoDelay = true,
+			NoDelay = false,
 		},
 		SemiLegit = {
 			AutoParry = true,
@@ -4535,7 +4520,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(atR, {
 			Title = "No Delay",
 			Flag = "DG_NoDelay",
-			Desc = "Drops the client ping prediction wait on QueueBasicAttack.",
+			Desc = "Skips our HumanDelay on queued hits. Does not touch game predictionEndTime (that 3x-speeds the anim and cancels unconfirmed attacks).",
 			get = function()
 				return Config.NoDelay
 			end,
