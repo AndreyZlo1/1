@@ -2638,6 +2638,13 @@ local function tryAttackHelper(lh, threat)
 		local imp = atk.impacts[1]
 		return math.max(0.05, ((imp.markerTime or 0.25) - (atk.pred or 0)) / math.max(atk.speed or 1, 0.5))
 	end
+	local function impactT(name)
+		local atk = pack and pack.attacks[name]
+		if not atk or not atk.impacts or not atk.impacts[1] then
+			return 0.25
+		end
+		return math.max(0.05, (atk.impacts[1].markerTime or 0.25) / math.max(atk.speed or 1, 0.5))
+	end
 
 	local function aimAt(root)
 		local from = lh.Root.Position
@@ -2745,12 +2752,17 @@ local function tryAttackHelper(lh, threat)
 					local iframeLeft = 0.3 - dodgeAge
 					local d = dist2d(lh.Root.Position, root.Position)
 					local standName = comboAttackName(lh, "Light")
-					local ht = hitT(standName)
-					local standReach = ourReach(lh, standName)
-					local travel = dodgeTravel(lh)
-					local dReach = ourReach(lh, "DashLight")
-					if isRev then
-					elseif Config.AHJumpChase and swinging and not isRev and not ahDodgeLock[lockK] then
+					local ourHit = impactT(standName)
+					if not isRev and not ahDodgeLock[lockK] then
+						local toward = isFacing(root, lh.Root.Position, 70)
+						if toward and iframeLeft <= ourHit + 0.02 and iframeLeft >= ourHit - 0.03 then
+							if fire(standName, "PERFDODGE", model, root, iframeLeft) then
+								ahDodgeLock[lockK] = true
+								return true
+							end
+						end
+					end
+					if Config.AHJumpChase and swinging and not isRev and not ahDodgeLock[lockK] then
 						local incoming = threat and threat.model == model and (threat.remain or 0) > 0.04 and not threat.windup
 						if not incoming then
 							local jHit = hitT("JumpAttack")
@@ -2788,13 +2800,8 @@ local function tryAttackHelper(lh, threat)
 								end
 							end
 						end
-					elseif not dodgeAge and iframeLeft <= ht + 0.02 and iframeLeft > -0.05 and not ahDodgeLock[lockK] and d <= standReach - 0.15 then
-						if fire(standName, "PERFDODGE", model, root, iframeLeft) then
-							ahDodgeLock[lockK] = true
-							return true
-						end
 					end
-					end
+				end
 				local blocking = model:GetAttribute("IsBlocking") == true or model:GetAttribute("ClientIsBlocking") == true or (handler and handler.IsBlocking == true) or blockingAnim == true
 				if blocking then
 					if blockingAnim and (blockAge or 1) < 0.07 and blockSince[model] and (now - blockSince[model]) > 0.12 then
@@ -3326,10 +3333,20 @@ bind(RunService.RenderStepped, function(dt)
 				end
 			end
 			if pressed.kind == "dashatk" then
-				local need = (pressed.from == "ah") and 0.04 or 0.18
+				local need = 0.18
+				if pressed.from == "ah" then
+					need = 0.04
+				elseif pressed.from == "jump" then
+					need = 0.27
+				end
 				local waited = pressed.at and (now - pressed.at) >= need
 				if not waited then
 					ready = false
+				elseif pressed.from ~= "jump" and not (threat and threat.will and threat.key == pressed.key) then
+					ready = false
+					pressed.kind = nil
+					pressed.rec = nil
+					pressed.from = nil
 				end
 			end
 			if ready then
@@ -3545,18 +3562,21 @@ bind(RunService.RenderStepped, function(dt)
 			if Config.AutoDodge and not lh.IsDodging then
 				local dodged, ddir = dodgeAt(lh, threat.root.Position, jdist, true)
 				if dodged then
-					pressed.kind = "dodge"
-					pressed.key = threat.key
-					pressed.untilTime = now + 0.32
-					dbg.dodge += 1
-					dbg._note("dodge")
-					lastDodgeAt = now
-					if threat.swing then
-						threat.swing.handled = true
+						pressed.kind = "dashatk"
+						pressed.key = threat.key
+						pressed.untilTime = now + 0.45
+						pressed.at = now
+						pressed.from = "jump"
+						pressed.rec = { name = "DashLight", kind = "Light" }
+						dbg.dodge += 1
+						dbg._note("dodge")
+						lastDodgeAt = now
+						if threat.swing then
+							threat.swing.handled = true
+						end
+						clog("DASHATK", string.format("jump-slam remain=%.3f dist=%.2f dir=%s recede=%s", threat.remain, jdist, ddir, tostring(recede)), threat, lh)
+						did = true
 					end
-					clog("DASHATK", string.format("jump-slam remain=%.3f dist=%.2f dir=%s recede=%s", threat.remain, jdist, ddir, tostring(recede)), threat, lh)
-					did = true
-				end
 			end
 			if not did and Config.AutoParry and threat.canParry then
 				if pressGuard(lh) then
@@ -3583,7 +3603,7 @@ bind(RunService.RenderStepped, function(dt)
 				-- slam closed this frame; skip planBreak
 			end
 		end
-		if not (pressed.kind == "dodge" or pressed.kind == "parry") or not jumpAtk then
+		if not (jumpAtk and (pressed.kind == "dashatk" or pressed.kind == "parry" or pressed.kind == "dodge")) then
 		local ping = PingController and PingController:GetPing() or 0
 		local strength = 1
 		if lh.ActionManager and type(lh.ActionManager._blockStrength) == "number" then
@@ -3817,8 +3837,39 @@ bind(RunService.RenderStepped, function(dt)
 			local doParry = Config.AutoParry and combatOn and (not threat.windup) and threat.canParry and threat.remain <= parryLead and threat.remain >= parryMin and canDef and pressed.kind == nil
 			local dodgeCover = ((threat.impN or 1) > 1) and (threat.lastRemain or threat.remain) or threat.remain
 			local dodgeDeclined = threat.swing and threat.swing.rolls and threat.swing.rolls.priDodge == false
+			local dualParry = (threat.impN or 1) > 1 and threat.canParry
+			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and lh.ActionManager and lh.ActionManager:CanStartDodge() and dodgeCover <= 0.26 and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined
 			local doDodge = Config.AutoDodge and combatOn and (not threat.windup) and dodgeCover <= 0.26 and threat.remain >= 0.018 and (not threat.canParry or threat.remain < 0.04 or not Config.AutoParry or jumpAtk) and canDef and not dodgeDeclined
 			if pressed.kind == "wait" or pressed.kind == "block" then
+			elseif canDodgeNow then
+				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
+				local dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, recede)
+				if dodged then
+					pressed.kind = "dashatk"
+					pressed.key = threat.key
+					pressed.untilTime = now + 0.42
+					pressed.at = now
+					pressed.from = "plan"
+					pressed.rec = { name = "DashLight", kind = "Light" }
+					dbg.dodge += 1 dbg._note("dodge")
+					lastDodgeAt = now
+					clog("DASHATK", string.format("prefer remain=%.3f last=%.3f dist=%.2f dir=%s recede=%s", threat.remain, threat.lastRemain or threat.remain, jumpDist, ddir, tostring(recede)), threat, lh)
+				elseif doParry then
+					if rollSticky(threat.swing, "parry", Config.ParryChance) then
+						if pressGuard(lh) then
+							pressed.kind = "parry"
+							pressed.key = threat.key
+							pressed.swingId = threatSwingId(threat)
+							pressed.tapped = false
+							pressed.untilTime = parryUntil(now, threat, parryDur, jumpAtk)
+							dbg.parry += 1 dbg._note("parry")
+							if threat.swing and (threat.impN or 1) <= 1 then
+								threat.swing.handled = true
+							end
+							clog("PARRY_FALLBACK", string.format("dodge-miss remain=%.3f", threat.remain), threat, lh)
+						end
+					end
+				end
 			elseif doParry then
 				if rollSticky(threat.swing, "parry", Config.ParryChance) then
 					local delay = dbg._hd(threat.remain, parryMin)
