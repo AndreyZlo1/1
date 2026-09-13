@@ -3077,20 +3077,25 @@ local function tryAttackHelper(lh, threat)
 						local fromP = lh.Root.Position
 						local to = Vector3.new(root.Position.X - fromP.X, 0, root.Position.Z - fromP.Z)
 						local away = to.Magnitude > 0.1 and to.Unit or Vector3.new(0, 0, -1)
-						local predI = root.Position + away * dodgeSlideDist(math.max(iframeLeft, 0), theirDd)
-						if iframeLeft <= ourHit + 0.02 and iframeLeft >= ourHit - 0.06 then
+						local vel = enemyVel(model, root)
+						local vflat = Vector3.new(vel.X, 0, vel.Z)
+						local sdir = vflat.Magnitude > 4 and vflat.Unit or away
+						local predI = root.Position + sdir * dodgeSlideDist(ourHit, theirDd)
+						if ourHit >= iframeLeft - 0.05 then
 							if fire(standName, "PERFDODGE_BACK", model, root, iframeLeft, predI) then
 								ahDodgeLock[lockK] = true
 								return true
 							end
 						end
 						local dashHit = impactT("DashLight")
-						if iframeLeft >= 0.22 then
+						if iframeLeft >= 0.14 then
 							local ourSlide = dodgeSlideDist(DODGE_CHAIN, ourDd)
 							local theirSlide = dodgeSlideDist(math.min(0.466 - dodgeAge, DODGE_CHAIN + dashHit), theirDd)
 							local predUs = fromP + away * ourSlide
 							local predThem = root.Position + away * theirSlide
-							if attackHits(lh, "DashLight", root, model, predThem, predUs) then
+							local reach = ourReach(lh, "DashLight")
+							local gap = dist2d(predUs, predThem)
+							if attackHits(lh, "DashLight", root, model, predThem, predUs) or gap <= reach + 2.4 then
 								if dodgeToward(lh, root.Position) then
 									ahDodgeLock[lockK] = true
 									lastAH = now
@@ -3103,7 +3108,7 @@ local function tryAttackHelper(lh, threat)
 									pressed.enemyRoot = root
 									pressed.enemyModel = model
 									dbg.helper += 1
-									clog("AH_BACKDODGE", string.format("iframe=%.3f d=%.2f dashHit=%.3f chain=%.3f", iframeLeft, d, dashHit, DODGE_CHAIN), {
+									clog("AH_BACKDODGE", string.format("iframe=%.3f d=%.2f dashHit=%.3f gap=%.2f", iframeLeft, d, dashHit, gap), {
 										weapon = equippedName(model),
 										attack = "BACKDODGE",
 										remain = iframeLeft,
@@ -3120,9 +3125,15 @@ local function tryAttackHelper(lh, threat)
 							end
 						end
 					elseif not isRev and not ahDodgeLock[lockK] then
-						local toward = isFacing(root, lh.Root.Position, 70)
-						if toward and iframeLeft <= ourHit + 0.02 and iframeLeft >= ourHit - 0.03 then
-							if fire(standName, "PERFDODGE", model, root, iframeLeft) then
+						local fromP = lh.Root.Position
+						local to = Vector3.new(root.Position.X - fromP.X, 0, root.Position.Z - fromP.Z)
+						local inDir = to.Magnitude > 0.1 and -to.Unit or Vector3.new(0, 0, -1)
+						local vel = enemyVel(model, root)
+						local vflat = Vector3.new(vel.X, 0, vel.Z)
+						local sdir = vflat.Magnitude > 4 and vflat.Unit or inDir
+						local predI = root.Position + sdir * dodgeSlideDist(ourHit, theirDd)
+						if ourHit >= iframeLeft - 0.05 then
+							if fire(standName, "DODGEIN", model, root, iframeLeft, predI) then
 								ahDodgeLock[lockK] = true
 								return true
 							end
