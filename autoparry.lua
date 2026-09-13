@@ -11,10 +11,10 @@ local Config = {
 	AutoParry = true,
 	AutoDodge = true,
 	SmartInterrupt = true,
-	JumpAttackCounter = true,
+	JumpAttackCounter = false,
 	BreakLight = true,
 	BreakHeavy = true,
-	BreakJump = true,
+	BreakJump = false,
 	BreakDodge = true,
 	BreakLightChance = 1,
 	BreakHeavyChance = 1,
@@ -2036,7 +2036,7 @@ local function dodgeTravel(lh)
 	if type(w) == "string" and catalog[w] then
 		dd = catalog[w].dodgeDist or 1
 	end
-	return 7.8 * dd * (Config.DodgeRange or 1)
+	return 7.8 * dd
 end
 
 local function packAttackRec(pack, name)
@@ -2151,100 +2151,93 @@ end
 
 local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpReach)
 	local swing = threat.swing
-	local cands = {}
 	local atkName = tostring(threat.attack)
 	local isUlt = atkName == "Ultimate" or string.find(atkName, "Ultimate", 1, true) ~= nil
 	local isJump = atkName == "JumpAttack"
 	local theirKind = attackKind(atkName)
-	if Config.AutoDodge and Config.BreakDodge and threat.will and (not isUlt) and (not isJump) then
-		local remain = threat.remain or 0
-		local nImp = threat.impN or 1
-		if not (nImp > 1 and Config.AutoParry and threat.canParry) and remain >= 0.05 then
-			if rollSticky(swing, "priDodge", Config.DodgeChance) then
-				return { kind = "dodge", rec = nil, weight = 1, abs = 1, mode = "dashatk" }
-			end
-		end
+	if not Config.SmartInterrupt then
+		return false
 	end
-	if Config.SmartInterrupt then
-		local function addBreak(kind, rec, weight, abs)
-			if not rec then
-				return
-			end
-			local reach = rec.reach or 7
-			if jumpDist <= reach + 0.2 then
-				cands[#cands + 1] = { kind = kind, rec = rec, weight = weight, abs = abs, mode = "interrupt" }
-			elseif threat.remain > rec.hit + 0.30 then
-				local travel = dodgeTravel(lh)
-				local gap = jumpDist - reach
-				if gap > 0.5 and gap <= travel * 0.82 then
-					cands[#cands + 1] = { kind = "gapclose", rec = rec, weight = weight, abs = abs, mode = "gapclose" }
-				end
-			end
+	local function take(kind, rec, chance, abs, mode)
+		if kind ~= "jump" and not rec then
+			return nil
 		end
-		if isUlt or theirKind == "Heavy" then
-			if Config.BreakHeavy then
-				addBreak("heavy", bestOfKind(lh, threat, "Heavy", true), Config.BreakHeavyChance, Config.BreakHeavyAbs)
-			end
-		elseif theirKind == "Light" then
-			if Config.BreakLight then
-				local rec = bestOfKind(lh, threat, "Light", true)
-				if rec and (threat.remain or 0) >= rec.hit + 0.08 then
-					addBreak("light", rec, Config.BreakLightChance, Config.BreakLightAbs)
-				end
-			end
-			if #cands == 0 and Config.BreakHeavy then
-				local rec = bestOfKind(lh, threat, "Heavy", true)
-				if rec and (threat.remain or 0) >= rec.hit + 0.08 then
-					addBreak("heavy", rec, Config.BreakHeavyChance, Config.BreakHeavyAbs)
-				end
-			end
+		if swing and swing.breakBan and swing.breakBan[kind] then
+			return nil
 		end
-		local hasBreak = false
-		for _, c in cands do
-			if c.kind == "heavy" or c.kind == "light" or c.kind == "gapclose" then
-				hasBreak = true
-				break
-			end
+		if (chance or 0) <= 0 then
+			return nil
 		end
-		if not hasBreak and Config.BreakJump and Config.JumpAttackCounter and jumpReady then
-			cands[#cands + 1] = { kind = "jump", weight = Config.BreakJumpChance, abs = Config.BreakJumpAbs, mode = "jump" }
+		if not rollSticky(swing, kind, chance) then
+			return nil
 		end
-	end
-	local banned = swing and swing.breakBan
-	local pool = {}
-	for _, c in cands do
-		if not (banned and banned[c.kind]) and (c.weight or 0) > 0 then
-			pool[#pool + 1] = c
-		end
-	end
-	local plan = false
-	if #pool > 0 then
-		local tot = 0
-		for _, c in pool do
-			tot += math.max(0, c.weight or 0)
-		end
-		if tot > 0 then
-			local r = rng:NextNumber() * tot
-			for _, c in pool do
-				r -= math.max(0, c.weight or 0)
-				if r <= 0 then
-					plan = c
-					break
-				end
-			end
-			plan = plan or pool[#pool]
-		end
-		if plan and not rollSticky(swing, plan.kind .. "Abs", plan.abs or 1) then
+		if not rollSticky(swing, kind .. "Abs", abs or 1) then
 			if swing then
 				swing.breakBan = swing.breakBan or {}
-				swing.breakBan[plan.kind] = true
+				swing.breakBan[kind] = true
 			end
-			plan = false
-		elseif plan and swing then
-			swing.breakKind = plan.kind
+			return nil
+		end
+		local plan = { kind = kind, rec = rec, weight = chance, abs = abs, mode = mode }
+		if swing then
+			swing.breakKind = kind
+		end
+		return plan
+	end
+	local function inReach(rec)
+		local reach = rec.reach or 7
+		return jumpDist <= reach + 0.2
+	end
+	if Config.BreakHeavy then
+		local rec = bestOfKind(lh, threat, "Heavy", true)
+		if rec and inReach(rec) then
+			local p = take("heavy", rec, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
+			if p then
+				return p
+			end
 		end
 	end
-	return plan
+	if Config.BreakLight and theirKind == "Light" then
+		local rec = bestOfKind(lh, threat, "Light", true)
+		if rec and (threat.remain or 0) >= rec.hit + 0.08 and inReach(rec) then
+			local p = take("light", rec, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
+			if p then
+				return p
+			end
+		end
+	end
+	if Config.BreakDodge and Config.AutoDodge and threat.will and (not isUlt) and (not isJump) then
+		local nImp = threat.impN or 1
+		if not (nImp > 1 and Config.AutoParry and threat.canParry) then
+			local rec = bestOfKind(lh, threat, "Heavy", true)
+			if not rec and theirKind == "Light" then
+				rec = bestOfKind(lh, threat, "Light", true)
+			end
+			if rec and not inReach(rec) and threat.remain > rec.hit + 0.30 then
+				local travel = dodgeTravel(lh)
+				local gap = jumpDist - (rec.reach or 7)
+				if gap > 0.5 and gap <= travel * 0.82 then
+					local p = take("gapclose", rec, Config.BreakDodgeChance, Config.BreakDodgeAbs, "gapclose")
+					if p then
+						return p
+					end
+				end
+			end
+			if (threat.remain or 0) >= 0.05 then
+				local p = take("dodge", { name = "DashLight", kind = "Light" }, Config.BreakDodgeChance, Config.BreakDodgeAbs, "dashatk")
+				if p then
+					return p
+				end
+			end
+		end
+	end
+	if Config.BreakJump and Config.JumpAttackCounter and jumpReady then
+		local p = take("jump", nil, Config.BreakJumpChance, Config.BreakJumpAbs, "jump")
+		if p then
+			return p
+		end
+	end
+	return false
 end
 
 local function dist2d(a, b)
@@ -3051,7 +3044,20 @@ bind(RunService.Heartbeat, function(dt)
 		am._dgapWrap = true
 		local old = am.TryQueueBasicAttack
 		am.TryQueueBasicAttack = function(self, kind, ...)
-			if Config.CustomCombo and (kind == "Light" or kind == "Heavy") then
+			local ch = self.CharacterHandler
+			local cur = self.CurrentAction
+			local dash = false
+			if cur and cur.ActionType == "Dodge" then
+				dash = true
+			end
+			if ch and ch.IsDodging then
+				dash = true
+			end
+			local nxt = kind == "Heavy" and self._nextHeavyAttackName or self._nextLightAttackName
+			if nxt == "DashLight" or nxt == "DashHeavy" then
+				dash = true
+			end
+			if Config.CustomCombo and not dash and (kind == "Light" or kind == "Heavy") then
 				local ww = equippedName(self.CharacterHandler and self.CharacterHandler.OriginalModel)
 				local pack = ww and catalog[ww]
 				local map = ww and Config.ComboMap[ww]
@@ -3102,13 +3108,12 @@ bind(RunService.Heartbeat, function(dt)
 		table.clear(dbg._ndAtk)
 	end
 	local spdMul = Config.DodgeSpeed or 1
-	local rngMul = Config.DodgeRange or 1
-	if (spdMul ~= 1 or rngMul ~= 1) and lh.IsDodging and am then
+	if spdMul ~= 1 and lh.IsDodging and am then
 		local act = am.CurrentAction
 		if act and act.ActionType == "Dodge" and act.MovementProperties and act.MovementProperties.mode == "Slide" and act ~= dbg._dodgeAct then
 			dbg._dodgeAct = act
 			local dd = act.DodgeDistance or 1
-			local v = 40 * dd * rngMul * spdMul
+			local v = 40 * dd * spdMul
 			act.MovementProperties.velocity = v
 			act.MovementProperties.velocityDecay = v * 1.5
 		end
@@ -4095,10 +4100,10 @@ function genv._DGAP.buildUI(ctx)
 			AutoParry = true,
 			AutoDodge = true,
 			SmartInterrupt = true,
-			JumpAttackCounter = true,
+			JumpAttackCounter = false,
 			BreakLight = true,
 			BreakHeavy = true,
-			BreakJump = true,
+			BreakJump = false,
 			BreakDodge = true,
 			BreakLightChance = 1,
 			BreakHeavyChance = 1,
@@ -4134,7 +4139,7 @@ function genv._DGAP.buildUI(ctx)
 			JumpAttackCounter = false,
 			BreakLight = true,
 			BreakHeavy = true,
-			BreakJump = true,
+			BreakJump = false,
 			BreakDodge = true,
 			BreakLightChance = 0.45,
 			BreakHeavyChance = 0.7,
@@ -4170,7 +4175,7 @@ function genv._DGAP.buildUI(ctx)
 			JumpAttackCounter = false,
 			BreakLight = true,
 			BreakHeavy = true,
-			BreakJump = true,
+			BreakJump = false,
 			BreakDodge = true,
 			BreakLightChance = 0.25,
 			BreakHeavyChance = 0.45,
@@ -4244,7 +4249,7 @@ function genv._DGAP.buildUI(ctx)
 	feature(apBase, {
 		Title = "AutoParry",
 		Flag = "DG_Enabled",
-		Desc = "Master switch. Off = the script does nothing.",
+		Desc = "Turns the whole script on or off.",
 		get = function()
 			return Config.Enabled
 		end,
@@ -4266,15 +4271,15 @@ function genv._DGAP.buildUI(ctx)
 			end
 		end,
 	}, ctx.flag("DG_Preset"))
-	disc(apBase, "Blatant = always defend and always counter. SemiLegit = mixed. Legit = current human rolls.")
+	disc(apBase, "Blatant = always. SemiLegit = mixed. Legit = human rolls.")
 
 	apBase:Divider()
-	apBase:Header({ Name = "Auto Parry" })
+	apBase:Header({ Name = "Parry" })
 	enable(apBase, "DG_AutoParry", function()
 		return Config.AutoParry
 	end, function(v)
 		Config.AutoParry = v
-	end, "Tap guard into the 0.233s parry window.")
+	end, "Parry incoming hits.")
 
 	apBase:Divider()
 	apBase:Header({ Name = "Auto Dodge" })
@@ -4282,12 +4287,11 @@ function genv._DGAP.buildUI(ctx)
 		return Config.AutoDodge
 	end, function(v)
 		Config.AutoDodge = v
-	end, "Iframe dodge. Highest priority when the roll lands.")
+	end, "Dodge incoming hits.")
 
 	local apChance = AutoParry:Section({ Side = "Left" })
 	apChance:Header({ Name = "Chances" })
-	disc(apChance, "Chance = how often this option is picked when it is available.")
-	disc(apChance, "Commit = after pick, chance we actually do it. 1 = never skip.")
+	disc(apChance, "How often each option is used. Commit = follow through after pick.")
 	slider(apChance, {
 		Name = "Dodge Chance",
 		Flag = "DG_DodgeChance",
@@ -4295,7 +4299,7 @@ function genv._DGAP.buildUI(ctx)
 		Min = 0,
 		Max = 1,
 		Precision = 2,
-		Desc = "First in the stack. If this roll fails, parry is considered.",
+		Desc = "Chance to dodge when no interrupt is taken.",
 		Callback = function(v)
 			Config.DodgeChance = v
 		end,
@@ -4307,7 +4311,7 @@ function genv._DGAP.buildUI(ctx)
 		Min = 0,
 		Max = 1,
 		Precision = 2,
-		Desc = "Used when dodge did not take the swing.",
+		Desc = "Chance to parry after interrupts.",
 		Callback = function(v)
 			Config.ParryChance = v
 		end,
@@ -4319,7 +4323,7 @@ function genv._DGAP.buildUI(ctx)
 		Min = 0,
 		Max = 1,
 		Precision = 2,
-		Desc = "Lowest. Hold guard so the parry window burns and the hit is a block.",
+		Desc = "Chance to hold block instead of parry.",
 		Callback = function(v)
 			Config.IntentionalBlockChance = v
 		end,
@@ -4331,7 +4335,7 @@ function genv._DGAP.buildUI(ctx)
 		return Config.HumanDelay
 	end, function(v)
 		Config.HumanDelay = v
-	end, "Random wait that still fits the remaining window. 0 = instant.")
+	end, "Adds a small random wait before acting.")
 	slider(apDelay, {
 		Name = "Delay Min",
 		Flag = "DG_HumanDelayMin",
@@ -4359,11 +4363,12 @@ function genv._DGAP.buildUI(ctx)
 
 	local apPlay = AutoParry:Section({ Side = "Right" })
 	apPlay:Header({ Name = "AutoPlay" })
+	disc(apPlay, "Priority: Heavy, Light, Dodge+Attack, then Parry.")
 	enable(apPlay, "DG_SmartInterrupt", function()
 		return Config.SmartInterrupt
 	end, function(v)
 		Config.SmartInterrupt = v
-	end, "Break their swing with ours when our hit lands first.")
+	end, "Interrupt their swing with ours.")
 
 	apPlay:Divider()
 	apPlay:Header({ Name = "Break Light" })
@@ -4371,7 +4376,7 @@ function genv._DGAP.buildUI(ctx)
 		return Config.BreakLight
 	end, function(v)
 		Config.BreakLight = v
-	end, "Interrupt Lights with Light (or Heavy if Light does not fit).")
+	end, "Interrupt their Light.")
 	slider(apPlay, {
 		Name = "Chance",
 		Flag = "DG_BreakLightChance",
@@ -4401,7 +4406,7 @@ function genv._DGAP.buildUI(ctx)
 		return Config.BreakHeavy
 	end, function(v)
 		Config.BreakHeavy = v
-	end, "Interrupt Heavies/Ult with Heavy only if we land first.")
+	end, "Interrupt their Heavy.")
 	slider(apPlay, {
 		Name = "Chance",
 		Flag = "DG_BreakHeavyChance",
@@ -4431,7 +4436,7 @@ function genv._DGAP.buildUI(ctx)
 		return Config.BreakJump
 	end, function(v)
 		Config.BreakJump = v
-	end)
+	end, "Jump slam as an interrupt. Off by default.")
 	slider(apPlay, {
 		Name = "Chance",
 		Flag = "DG_BreakJumpChance",
@@ -4461,7 +4466,7 @@ function genv._DGAP.buildUI(ctx)
 		return Config.BreakDodge
 	end, function(v)
 		Config.BreakDodge = v
-	end, "Dodge + DashLight follow when a standing interrupt is skipped.")
+	end, "Dodge in, then attack.")
 	slider(apPlay, {
 		Name = "Chance",
 		Flag = "DG_BreakDodgeChance",
@@ -4495,7 +4500,7 @@ function genv._DGAP.buildUI(ctx)
 		Max = 0.2,
 		Precision = 3,
 		Suffix = "s",
-		Desc = "Press this much before impact. 0 = marker time.",
+		Desc = "How early to parry.",
 		Callback = function(v)
 			Config.ParryLead = v
 		end,
@@ -4508,7 +4513,7 @@ function genv._DGAP.buildUI(ctx)
 		Max = 0.4,
 		Precision = 3,
 		Suffix = "s",
-		Desc = "Dodge earlier than parry. Iframe is 0.3s.",
+		Desc = "How early to dodge.",
 		Callback = function(v)
 			Config.DodgeLead = v
 		end,
@@ -4532,7 +4537,7 @@ function genv._DGAP.buildUI(ctx)
 		Min = 0,
 		Max = 2,
 		Precision = 2,
-		Desc = "Extra studs on will-hit.",
+		Desc = "Hit range padding.",
 		Callback = function(v)
 			Config.ReachPad = v
 		end,
@@ -4544,7 +4549,7 @@ function genv._DGAP.buildUI(ctx)
 		return Config.IntentionalBlock
 	end, function(v)
 		Config.IntentionalBlock = v
-	end, "Hold instead of tap so the parry window expires. Chance is in Chances.")
+	end, "Hold block instead of parry.")
 
 	local apCombo = AutoParry:Section({ Side = "Right" })
 	apCombo:Header({ Name = "Combo" })
@@ -4558,8 +4563,7 @@ function genv._DGAP.buildUI(ctx)
 			Config.CustomCombo = v == "Custom"
 		end,
 	}, ctx.flag("DG_ComboMode"))
-	disc(apCombo, "Fastest = if the next combo hit is too slow, throw 01 instead.")
-	disc(apCombo, "GameCombo = always the game next Light/Heavy. Custom = order below.")
+	disc(apCombo, "Fastest skips to 01 if needed. GameCombo never skips. Custom = slots.")
 
 	-- ════════════════════════════════ Attack ═══════════════════════════════
 	if Attack then
@@ -4568,7 +4572,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(atL, {
 			Title = "Attack Helper",
 			Flag = "DG_AttackHelper",
-			Desc = "Punish parry / block / whiff. Light or dodge+DashLight.",
+			Desc = "Hits after they parry, block, or miss.",
 			get = function()
 				return Config.AttackHelper
 			end,
@@ -4580,27 +4584,27 @@ function genv._DGAP.buildUI(ctx)
 			return Config.PerfectDodgeCounter
 		end, function(v)
 			Config.PerfectDodgeCounter = v
-		end, "Hit after their dodge iframe dies.")
+		end, "Hit after they dodge.")
 		boolToggle(atL, "Punish Block", "DG_AHPunishBlock", function()
 			return Config.AHPunishBlock
 		end, function(v)
 			Config.AHPunishBlock = v
-		end, "Light or DashLight when they hold past the parry window.")
+		end, "Hit when they hold block.")
 		boolToggle(atL, "Punish Whiff", "DG_AHPunishWhiff", function()
 			return Config.AHPunishWhiff
 		end, function(v)
 			Config.AHPunishWhiff = v
-		end, "Light when they are in recovery after a miss.")
+		end, "Hit when they miss.")
 		boolToggle(atL, "Jump Chase", "DG_AHJumpChase", function()
 			return Config.AHJumpChase
 		end, function(v)
 			Config.AHJumpChase = v
-		end, "Jump+attack into a forward dodge.")
+		end, "Jump after they dodge forward.")
 		boolToggle(atL, "Jump Attack Counter", "DG_JumpAttackCounter", function()
 			return Config.JumpAttackCounter
 		end, function(v)
 			Config.JumpAttackCounter = v
-		end, "Jump slam as a defensive counter.")
+		end, "Jump slam as a counter. Off by default.")
 		slider(atL, {
 			Name = "Helper Cooldown",
 			Flag = "DG_AHCooldown",
@@ -4609,7 +4613,7 @@ function genv._DGAP.buildUI(ctx)
 			Max = 0.6,
 			Precision = 2,
 			Suffix = "s",
-			Desc = "Min time between helper hits.",
+			Desc = "Wait between helper hits.",
 			Callback = function(v)
 				Config.AHCooldown = v
 			end,
@@ -4622,7 +4626,7 @@ function genv._DGAP.buildUI(ctx)
 			Max = 0.25,
 			Precision = 2,
 			Suffix = "s",
-			Desc = "Wait this long into their block before punish.",
+			Desc = "Wait into their block before hitting.",
 			Callback = function(v)
 				Config.AHBlockHold = v
 			end,
@@ -4635,7 +4639,7 @@ function genv._DGAP.buildUI(ctx)
 			Max = 1,
 			Precision = 2,
 			Suffix = "s",
-			Desc = "Helper idle time before a recovery punish.",
+			Desc = "Wait before punishing a miss.",
 			Callback = function(v)
 				Config.AHWhiffGate = v
 			end,
@@ -4646,7 +4650,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(atR, {
 			Title = "No Delay",
 			Flag = "DG_NoDelay",
-			Desc = "Raises clientTransitionSpeed on the attack type so Start blend is ~0.012s instead of 0.1s. Does not zero predictionEndTime.",
+			Desc = "Starts attacks faster on the client.",
 			get = function()
 				return Config.NoDelay
 			end,
@@ -4665,7 +4669,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.ComboMode = "Custom"
 				Config.ComboOnly = false
 			end
-		end, "Rewrite Light/Heavy order per weapon. 2,3,4,1 instead of 1,2,3,4.")
+		end, "Custom Light/Heavy order per weapon.")
 		local lightOpts = { "Light01", "Light02", "Light03", "Light04", "DashLight", "none" }
 		local heavyOpts = { "Heavy01", "Heavy02", "Heavy03", "DashHeavy", "none" }
 		local comboWep = weapons[1]
@@ -4760,7 +4764,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(mvL, {
 			Title = "Speed",
 			Flag = "DG_Speed",
-			Desc = "CFrame step along move direction.",
+			Desc = "Moves you faster.",
 			get = function()
 				return Config.Speed
 			end,
@@ -4785,7 +4789,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(mvL, {
 			Title = "NoClip",
 			Flag = "DG_NoClip",
-			Desc = "Turns off collision on our root and parts.",
+			Desc = "Walk through walls.",
 			get = function()
 				return Config.NoClip
 			end,
@@ -4799,7 +4803,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(mvL, {
 			Title = "No Slowdown",
 			Flag = "DG_NoSlowdown",
-			Desc = "Keeps WalkSpeed at weapon RunSpeed.",
+			Desc = "No slow from hits or actions.",
 			get = function()
 				return Config.NoSlowdown
 			end,
@@ -4813,7 +4817,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(mvR, {
 			Title = "No Stun",
 			Flag = "DG_NoStun",
-			Desc = "Cancels stagger so you can act through hitstun.",
+			Desc = "Ignore stagger.",
 			get = function()
 				return Config.NoStun
 			end,
@@ -4827,7 +4831,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(mvR, {
 			Title = "God Mode",
 			Flag = "DG_GodMode",
-			Desc = "Forces dodge iframe. ResolveImpact GetHit becomes Dodge.",
+			Desc = "Always dodge iframe.",
 			get = function()
 				return Config.GodMode
 			end,
@@ -4845,21 +4849,9 @@ function genv._DGAP.buildUI(ctx)
 			Min = 0.5,
 			Max = 3,
 			Precision = 2,
-			Desc = "Rewrites Dodge MovementProperties.velocity every frame. 1 = vanilla.",
+			Desc = "Dodge slide speed. 1 = vanilla.",
 			Callback = function(v)
 				Config.DodgeSpeed = v
-			end,
-		})
-		slider(mvR, {
-			Name = "Dodge Range",
-			Flag = "DG_DodgeRange",
-			Default = Config.DodgeRange,
-			Min = 0.5,
-			Max = 3,
-			Precision = 2,
-			Desc = "DodgeDistance mul. Applied on the live Dodge action.",
-			Callback = function(v)
-				Config.DodgeRange = v
 			end,
 		})
 		slider(mvR, {
@@ -4870,6 +4862,7 @@ function genv._DGAP.buildUI(ctx)
 			Max = 1.5,
 			Precision = 2,
 			Suffix = "s",
+			Desc = "Wait between script dodges.",
 			Callback = function(v)
 				Config.DodgeCooldown = v
 			end,
@@ -4883,7 +4876,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(vsL, {
 			Title = "Target ESP",
 			Flag = "DG_Visuals",
-			Desc = "Draws on the two nearest enemies.",
+			Desc = "ESP on the nearest enemies.",
 			get = function()
 				return Config.Visuals
 			end,
@@ -4947,7 +4940,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(vsL, {
 			Title = "Hitbox",
 			Flag = "DG_Hitbox",
-			Desc = "Live attack box on the current threat.",
+			Desc = "Shows their attack box.",
 			get = function()
 				return Config.Hitbox
 			end,
@@ -4963,7 +4956,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitboxPhysics = v
 			end,
 		}, ctx.flag("DG_HitboxPhysics"))
-		disc(vsL, "Scatter = shards fly in air. Floor/UseAnother = drop onto the ground.")
+		disc(vsL, "Scatter = air shards. Floor = drop to ground.")
 		slider(vsL, {
 			Name = "Anim Speed",
 			Flag = "DG_HitboxAnimSpeed",
@@ -5011,7 +5004,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(vsR, {
 			Title = "Custom Model",
 			Flag = "DG_CustomModel",
-			Desc = "Glass body + outline. Clothes stripped. Weapon not touched.",
+			Desc = "Changes your body material.",
 			get = function()
 				return Config.CustomModel
 			end,
@@ -5037,7 +5030,7 @@ function genv._DGAP.buildUI(ctx)
 			Min = 0,
 			Max = 0.9,
 			Precision = 2,
-			Desc = "0 = solid glass. Higher = more see-through.",
+			Desc = "How see-through the body is.",
 			Callback = function(v)
 				Config.CustomModelTransparency = v
 			end,
@@ -5066,7 +5059,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(vsR, {
 			Title = "Hit Ring",
 			Flag = "DG_HitRing",
-			Desc = "One floor ring on a confirmed hit.",
+			Desc = "Ring on a confirmed hit.",
 			get = function()
 				return Config.HitRing
 			end,
@@ -5219,7 +5212,7 @@ function genv._DGAP.buildUI(ctx)
 	if Misc then
 		local msL = Misc:Section({ Side = "Left" })
 		msL:Header({ Name = "Skin Changer" })
-		disc(msL, "Per-weapon cosmetic. Default = stock. Reset writes Default and refreshes UI.")
+		disc(msL, "Skin per weapon. Reset = Default.")
 		local skinEls = {}
 		for _, wname in weapons do
 			local pack = catalog[wname]
@@ -5268,7 +5261,7 @@ function genv._DGAP.buildUI(ctx)
 			return Config.StaffDetect
 		end, function(v)
 			Config.StaffDetect = v
-		end, "Kick if a third player joins a 1v1.")
+		end, "Kick if a spectator joins.")
 	end
 
 	-- ════════════════════════════════ Debug ════════════════════════════════
