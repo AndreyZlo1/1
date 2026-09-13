@@ -56,7 +56,7 @@ local Config = {
 	MinRemaining = -0.02,
 	Visuals = true,
 	Hitbox = true,
-	HitboxPhysics = "UseAnother",
+	HitboxPhysics = "AddAnother",
 	HitboxAnimSpeed = 0.7,
 	HitboxFallSpeed = 0.45,
 	HitboxColorA = Color3.fromRGB(70, 230, 255),
@@ -105,6 +105,7 @@ local Config = {
 	CustomModelMaterial = "Glass",
 	CustomModelColor = Color3.fromRGB(186, 150, 255),
 	CustomModelTransparency = 0.18,
+	DefaultAnims = false,
 	OutlineColor = Color3.fromRGB(255, 92, 163),
 	Debug = false,
 }
@@ -1323,7 +1324,7 @@ local function renderMirror(boxCF, size, vis, now, shards, physics, floorY, rest
 		return
 	end
 	local h = size * 0.5
-	local floor = physics == "Floor" or physics == "UseAnother" or physics == "AddAnother"
+	local floor = physics == "AddAnother" or physics == "Floor"
 	local restAmt = restore and restore * restore * (3 - 2 * restore)
 	local leaving = (out or 0) > 0.001 or (lie or 0) > 0.001 or (sink or 0) > 0.001
 	form = form or 0
@@ -1643,6 +1644,13 @@ local function pressDodge(lh)
 	if not am or not am:CanStartDodge() then
 		return false
 	end
+	local cd = Config.DodgeCooldown
+	if type(cd) ~= "number" or cd < 0.05 then
+		cd = 0.4
+	end
+	if lastDodgeAt > 0 and os.clock() - lastDodgeAt < cd - 0.02 then
+		return false
+	end
 	wrapDodgeCheck(lh)
 	lh._desiredDodge = DODGE_CHAIN
 	lastDodgeAt = os.clock()
@@ -1800,6 +1808,9 @@ local function applySkin(name)
 	Config.WeaponSkins[tostring(lh.EquippedWeapon)] = name
 	lastSkin = name .. ":" .. tostring(lh.EquippedWeapon)
 	print("[DG-AP] skin=" .. name .. " weapon=" .. tostring(lh.EquippedWeapon))
+	if Config.DefaultAnims then
+		dodgeHold.fixAnims(lh)
+	end
 	return true
 end
 
@@ -2239,6 +2250,52 @@ function dodgeHold.atmo()
 	at.Haze = Config.AtmoHaze or 1.6
 	if typeof(Config.AtmoColor) == "Color3" then
 		at.Color = Config.AtmoColor
+	end
+end
+
+function dodgeHold.fixAnims(lh)
+	if not Config.DefaultAnims or not lh then
+		return
+	end
+	local wh = weaponHandler(lh)
+	local am = lh.ActionManager
+	if not wh or not am or type(am.LoadAction) ~= "function" then
+		return
+	end
+	local info = wh.WeaponInfo
+	if type(info) ~= "table" then
+		return
+	end
+	local crit, ult
+	local cs = info.CriticalStrikes
+	if type(cs) == "table" then
+		local d = cs.Default
+		if type(d) == "table" then
+			crit = d.action
+		end
+		if not crit then
+			for _, pack in cs do
+				if type(pack) == "table" and pack.action then
+					crit = pack.action
+					break
+				end
+			end
+		end
+	end
+	local ua = info.UltimateAbilities
+	if type(ua) == "table" then
+		for _, pack in ua do
+			if type(pack) == "table" and pack.action then
+				ult = pack.action
+				break
+			end
+		end
+	end
+	if crit then
+		am:LoadAction("CriticalStrike", crit)
+	end
+	if ult then
+		am:LoadAction("UltimateAbility", ult)
 	end
 end
 
@@ -4269,10 +4326,7 @@ bind(RunService.RenderStepped, function(dt)
 			elseif canDodgeNow then
 				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
 				local follow = dodgeHold.ok(threat, threat.remain, dodgeHold.hit(lh))
-				local delay = 0
-				if not follow then
-					delay = dbg._hd(threat.remain, 0.05)
-				end
+				local delay = dbg._hd(threat.remain, follow and 0.10 or 0.05)
 				if delay > 0.01 then
 					pressed.pendKind = "dodge"
 					pressed.pendAt = now + delay
@@ -4424,8 +4478,8 @@ bind(RunService.RenderStepped, function(dt)
 		local st = stateFor(c.model)
 		local spd = math.max(0.2, Config.HitboxAnimSpeed or 0.7)
 		local phys = Config.HitboxPhysics
-		local useAnother = phys == "UseAnother" or phys == "AddAnother"
-		local floorPhys = phys == "Floor" or useAnother
+		local useAnother = phys == "AddAnother"
+		local floorPhys = phys == "AddAnother"
 		local inT = 0.38 / spd
 		local outT = floorPhys and math.max(0.12, Config.HitboxFallSpeed or 0.45) or (0.28 / spd)
 		local live = Config.Hitbox and threat and threat.will and threat.model == c.model and threat.boxCF
@@ -4449,7 +4503,7 @@ bind(RunService.RenderStepped, function(dt)
 				st.hbLie = 0
 				st.hbForm = 0
 				st.hbVis = 0
-				while #st.gens > 1 do
+				while #st.gens > 6 do
 					table.remove(st.gens, 1)
 				end
 			end
@@ -5693,13 +5747,13 @@ function genv._DGAP.buildUI(ctx)
 		})
 		vsHit:Dropdown({
 			Name = "Physics",
-			Options = { "UseAnother", "AddAnother", "Floor", "Scatter" },
+			Options = { "AddAnother", "Scatter" },
 			Default = Config.HitboxPhysics,
 			Callback = function(v)
 				Config.HitboxPhysics = v
 			end,
 		}, ctx.flag("DG_HitboxPhysics"))
-		disc(vsHit, "Scatter = air shards. Floor = drop to ground.")
+		disc(vsHit, "AddAnother = new box each swing. Scatter = air shards.")
 		slider(vsHit, {
 			Name = "Anim Speed",
 			Flag = "DG_HitboxAnimSpeed",
@@ -6001,6 +6055,21 @@ function genv._DGAP.buildUI(ctx)
 		local msL = Misc:Section({ Side = "Left" })
 		msL:Header({ Name = "Skin Changer" })
 		disc(msL, "Skin per weapon. Reset = Default.")
+		boolToggle(msL, "Default Anims", "DG_DefaultAnims", function()
+			return Config.DefaultAnims
+		end, function(v)
+			Config.DefaultAnims = v
+			local lh = localHandler()
+			if v then
+				dodgeHold.fixAnims(lh)
+			else
+				local w = lh and tostring(lh.EquippedWeapon)
+				local skin = w and Config.WeaponSkins[w]
+				if type(skin) == "string" and skin ~= "" then
+					applySkin(skin)
+				end
+			end
+		end, "Default ult and execute anims, not the skin ones.")
 		local skinEls = {}
 		for _, wname in weapons do
 			local pack = catalog[wname]
