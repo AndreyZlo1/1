@@ -82,6 +82,13 @@ local Config = {
 	AttackTrails = true,
 	TrailColorA = Color3.fromRGB(70, 230, 255),
 	TrailColorB = Color3.fromRGB(190, 80, 255),
+	TrailLife = 0.55,
+	Atmosphere = false,
+	AtmoDensity = 0.45,
+	AtmoHaze = 1.6,
+	AtmoColor = Color3.fromRGB(118, 142, 186),
+	AutoQueue = false,
+	QueueMode = "1v1",
 	ParrySound = true,
 	ParrySoundPreset = "SuccessFX",
 	ParrySoundVolume = 3.5,
@@ -1736,7 +1743,8 @@ local function stepTrails(lh)
 	local function paint(tr)
 		if tr and tr:IsA("Trail") then
 			tr.Color = seq
-			tr.LightEmission = 0.85
+				tr.LightEmission = 0.85
+				tr.Lifetime = Config.TrailLife or 0.55
 		end
 	end
 	local wh = weaponHandler(lh)
@@ -2115,6 +2123,80 @@ function dodgeHold.arm(lh, threat, from, wantFollow)
 	else
 		pressed.rec = nil
 	end
+end
+
+function dodgeHold.free(lh)
+	dodgeHold.dir = nil
+	return pressDodge(lh)
+end
+
+function dodgeHold.go(lh, threat, dest, dist, recede, from, wantFollow)
+	local follow = wantFollow and dodgeHold.ok(threat, threat and threat.remain, dodgeHold.hit(lh))
+	local dodged, ddir
+	if follow then
+		dodged, ddir = dodgeAt(lh, dest, dist, recede)
+	else
+		dodged = dodgeHold.free(lh)
+		ddir = "free"
+	end
+	if dodged then
+		dodgeHold.arm(lh, threat, from, follow)
+	end
+	return dodged, ddir, follow
+end
+
+function dodgeHold.atmo()
+	local at = game:GetService("Lighting"):FindFirstChild("Atmosphere")
+	if not at then
+		return
+	end
+	if not dodgeHold.atmoSaved then
+		dodgeHold.atmoSaved = {
+			Density = at.Density,
+			Haze = at.Haze,
+			Color = at.Color,
+		}
+	end
+	if not Config.Atmosphere then
+		if dodgeHold.atmoOn then
+			at.Density = dodgeHold.atmoSaved.Density
+			at.Haze = dodgeHold.atmoSaved.Haze
+			at.Color = dodgeHold.atmoSaved.Color
+			dodgeHold.atmoOn = false
+		end
+		return
+	end
+	dodgeHold.atmoOn = true
+	at.Density = Config.AtmoDensity or 0.45
+	at.Haze = Config.AtmoHaze or 1.6
+	if typeof(Config.AtmoColor) == "Color3" then
+		at.Color = Config.AtmoColor
+	end
+end
+
+function dodgeHold.queueTick()
+	if not Config.AutoQueue or not running then
+		return
+	end
+	if MatchController and MatchController.ActiveLocalPlayerMatch then
+		return
+	end
+	local now = os.clock()
+	if dodgeHold.qWait and now < dodgeHold.qWait then
+		return
+	end
+	if dodgeHold.qAt and now - dodgeHold.qAt < 5 then
+		return
+	end
+	local mm = ReplicatedStorage:FindFirstChild("Remotes")
+	mm = mm and mm:FindFirstChild("Matchmaking")
+	local rem = mm and mm:FindFirstChild("RequestEnterQueue")
+	if not rem then
+		return
+	end
+	local mode = Config.QueueMode == "Ranked" and "ranked1v1" or "casual1v1"
+	rem:FireServer(mode)
+	dodgeHold.qAt = now
 end
 
 local function comboAttackName(lh, wantKind)
@@ -3251,7 +3333,16 @@ local function styleIndex()
 	return 1
 end
 
+if MatchController and MatchController.MatchEndedForLocalPlayer then
+	bind(MatchController.MatchEndedForLocalPlayer, function()
+		dodgeHold.qWait = os.clock() + 2
+		dodgeHold.qAt = nil
+	end)
+end
+
 bind(RunService.Heartbeat, function(dt)
+	dodgeHold.atmo()
+	dodgeHold.queueTick()
 	if not running or not Config.Enabled then
 		return
 	end
@@ -3665,14 +3756,13 @@ bind(RunService.RenderStepped, function(dt)
 					pressed.kind = nil
 				end
 			elseif pk == "dodge" then
-				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
-				local d = (lh.Root and threat.root) and dist2d(lh.Root.Position, threat.root.Position) or 0
-				local dodged, ddir = dodgeAt(lh, threat.root.Position, d, recede)
-				if dodged then
-					dodgeHold.arm(lh, threat, "plan", true)
-					dbg.dodge += 1 dbg._note("dodge")
-					lastDodgeAt = now
-					clog("DASHATK", string.format("delayed remain=%.3f dir=%s follow=%s escape=%s", threat.remain, ddir, pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
+						local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
+						local d = (lh.Root and threat.root) and dist2d(lh.Root.Position, threat.root.Position) or 0
+						local dodged, ddir = dodgeHold.go(lh, threat, threat.root.Position, d, recede, "plan", true)
+						if dodged then
+							dbg.dodge += 1 dbg._note("dodge")
+							lastDodgeAt = now
+							clog("DASHATK", string.format("delayed remain=%.3f dir=%s follow=%s escape=%s", threat.remain, ddir, pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
 				else
 					pressed.kind = nil
 				end
@@ -3923,7 +4013,13 @@ bind(RunService.RenderStepped, function(dt)
 						end
 					else
 					local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
-					local dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, recede)
+					local dodged, ddir
+					if follow then
+						dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, recede)
+					else
+						dodged = dodgeHold.free(lh)
+						ddir = "free"
+					end
 					if dodged then
 						dodgeHold.arm(lh, threat, "plan", follow)
 						dbg.dodge += 1 dbg._note("dodge")
@@ -3998,9 +4094,8 @@ bind(RunService.RenderStepped, function(dt)
 			if pressed.kind == "wait" or pressed.kind == "block" then
 			elseif canDodgeNow then
 				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
-				local dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, recede)
+				local dodged, ddir = dodgeHold.go(lh, threat, threat.root.Position, jumpDist, recede, "plan", true)
 				if dodged then
-					dodgeHold.arm(lh, threat, "plan", true)
 					dbg.dodge += 1 dbg._note("dodge")
 					lastDodgeAt = now
 					clog("DASHATK", string.format("prefer remain=%.3f last=%.3f dist=%.2f dir=%s recede=%s follow=%s escape=%s", threat.remain, threat.lastRemain or threat.remain, jumpDist, ddir, tostring(recede), pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
@@ -4043,21 +4138,20 @@ bind(RunService.RenderStepped, function(dt)
 						clog("PARRY", string.format("remain=%.3f last=%.3f imp=%s/%s lead=%.3f chance=%.2f", threat.remain, threat.lastRemain or threat.remain, tostring(threat.impIndex or 1), tostring(threat.impN or 1), parryLead, Config.ParryChance), threat, lh)
 					elseif jumpAtk and Config.AutoDodge and dodgeCover <= DODGE_IFRAME then
 						local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
-						local dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, true)
+						local dodged = dodgeHold.free(lh)
 						if dodged then
 							pressed.kind = "dodge"
 							pressed.key = threat.key
 							pressed.untilTime = now + 0.32
 							dbg.dodge += 1 dbg._note("dodge")
-							clog("DODGE", string.format("jump-fallback remain=%.3f dir=%s recede=%s", threat.remain, ddir, tostring(recede)), threat, lh)
+							clog("DODGE", string.format("jump-fallback remain=%.3f dir=free recede=%s", threat.remain, tostring(recede)), threat, lh)
 						end
 					end
 				else
 					if Config.AutoDodge and combatOn and dodgeCover <= DODGE_IFRAME and threat.remain >= 0.018 then
 						local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
-						local dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, recede)
+						local dodged, ddir = dodgeHold.go(lh, threat, threat.root.Position, jumpDist, recede, "parry-skip", true)
 						if dodged then
-							dodgeHold.arm(lh, threat, "parry-skip", true)
 							dbg.dodge += 1 dbg._note("dodge")
 							clog("DASHATK", string.format("parry-skip remain=%.3f dir=%s follow=%s escape=%s", threat.remain, ddir, pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
 						end
@@ -4334,6 +4428,10 @@ local function unload()
 	running = false
 	releaseGuard(localHandler())
 	clearCosmetics()
+	if dodgeHold.atmoSaved then
+		Config.Atmosphere = false
+		dodgeHold.atmo()
+	end
 	for _, c in conns do
 		c:Disconnect()
 	end
@@ -4703,20 +4801,22 @@ function genv._DGAP.buildUI(ctx)
 	}, ctx.flag("DG_Priority4"))
 
 	local apParry = AutoParry:Section({ Side = "Left" })
-	apParry:Header({ Name = "Parry" })
-	enable(apParry, "DG_AutoParry", function()
+	apParry:Header({ Name = "Defense" })
+	boolToggle(apParry, "Parry", "DG_AutoParry", function()
 		return Config.AutoParry
 	end, function(v)
 		Config.AutoParry = v
 	end, "Parry incoming hits.")
-
-	local apDodge = AutoParry:Section({ Side = "Left" })
-	apDodge:Header({ Name = "Auto Dodge" })
-	enable(apDodge, "DG_AutoDodge", function()
+	boolToggle(apParry, "Dodge", "DG_AutoDodge", function()
 		return Config.AutoDodge
 	end, function(v)
 		Config.AutoDodge = v
 	end, "Dodge incoming hits.")
+	boolToggle(apParry, "Block", "DG_IntentionalBlock", function()
+		return Config.IntentionalBlock
+	end, function(v)
+		Config.IntentionalBlock = v
+	end, "Hold block instead of parry.")
 
 	local apChance = AutoParry:Section({ Side = "Left" })
 	apChance:Header({ Name = "Chances" })
@@ -4975,14 +5075,6 @@ function genv._DGAP.buildUI(ctx)
 			Config.ReachPad = v
 		end,
 	})
-
-	local apBlock = AutoParry:Section({ Side = "Right" })
-	apBlock:Header({ Name = "Block" })
-	enable(apBlock, "DG_IntentionalBlock", function()
-		return Config.IntentionalBlock
-	end, function(v)
-		Config.IntentionalBlock = v
-	end, "Hold block instead of parry.")
 
 	local apCombo = AutoParry:Section({ Side = "Right" })
 	apCombo:Header({ Name = "Combo" })
@@ -5459,6 +5551,19 @@ function genv._DGAP.buildUI(ctx)
 				end
 			end,
 		}, ctx.flag("DG_TrailColorB"))
+		slider(vsTrail, {
+			Name = "Lifetime",
+			Flag = "DG_TrailLife",
+			Default = Config.TrailLife,
+			Min = 0.1,
+			Max = 2.5,
+			Precision = 2,
+			Suffix = "s",
+			Desc = "How long the trail stays visible.",
+			Callback = function(v)
+				Config.TrailLife = v
+			end,
+		})
 
 		local vsR = Visuals:Section({ Side = "Right" })
 		vsR:Header({ Name = "Custom Model" })
@@ -5721,6 +5826,68 @@ function genv._DGAP.buildUI(ctx)
 		end, function(v)
 			Config.StaffDetect = v
 		end, "Kick if a spectator joins.")
+
+		local msAtmo = Misc:Section({ Side = "Right" })
+		msAtmo:Header({ Name = "Atmosphere" })
+		enable(msAtmo, "DG_Atmosphere", function()
+			return Config.Atmosphere
+		end, function(v)
+			Config.Atmosphere = v
+			if not v then
+				dodgeHold.atmo()
+			end
+		end, "Overrides lighting fog and haze.")
+		slider(msAtmo, {
+			Name = "Density",
+			Flag = "DG_AtmoDensity",
+			Default = Config.AtmoDensity,
+			Min = 0,
+			Max = 1,
+			Precision = 2,
+			Callback = function(v)
+				Config.AtmoDensity = v
+			end,
+		})
+		slider(msAtmo, {
+			Name = "Haze",
+			Flag = "DG_AtmoHaze",
+			Default = Config.AtmoHaze,
+			Min = 0,
+			Max = 10,
+			Precision = 1,
+			Callback = function(v)
+				Config.AtmoHaze = v
+			end,
+		})
+		msAtmo:Colorpicker({
+			Name = "Color",
+			Default = Config.AtmoColor,
+			Callback = function(c)
+				if typeof(c) == "Color3" then
+					Config.AtmoColor = c
+				end
+			end,
+		}, ctx.flag("DG_AtmoColor"))
+
+		local msQ = Misc:Section({ Side = "Right" })
+		msQ:Header({ Name = "Auto Matchmaking" })
+		enable(msQ, "DG_AutoQueue", function()
+			return Config.AutoQueue
+		end, function(v)
+			Config.AutoQueue = v
+			if v then
+				dodgeHold.qWait = os.clock() + 0.4
+				dodgeHold.qAt = nil
+			end
+		end, "Requeues 1v1 or Ranked when a match ends.")
+		msQ:Dropdown({
+			Name = "Mode",
+			Options = { "1v1", "Ranked" },
+			Default = Config.QueueMode or "1v1",
+			Callback = function(v)
+				Config.QueueMode = v
+			end,
+		}, ctx.flag("DG_QueueMode"))
 	end
 
 	-- ════════════════════════════════ Debug ════════════════════════════════
