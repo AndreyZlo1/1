@@ -7,41 +7,42 @@ local ESP_STYLES = { "Soul", "Skeleton", "Rift", "Weave" }
 
 local Config = {
 	Enabled = true,
+	Preset = "Blatant",
 	AutoParry = true,
 	AutoDodge = true,
 	SmartInterrupt = true,
-	JumpAttackCounter = false,
+	JumpAttackCounter = true,
 	BreakLight = true,
 	BreakHeavy = true,
 	BreakJump = true,
 	BreakDodge = true,
-	BreakLightChance = 0.25,
-	BreakHeavyChance = 0.45,
-	BreakJumpChance = 0.18,
-	BreakDodgeChance = 0.4,
-	BreakLightAbs = 0.7,
-	BreakHeavyAbs = 0.65,
-	BreakJumpAbs = 0.4,
-	BreakDodgeAbs = 0.7,
+	BreakLightChance = 1,
+	BreakHeavyChance = 1,
+	BreakJumpChance = 1,
+	BreakDodgeChance = 1,
+	BreakLightAbs = 1,
+	BreakHeavyAbs = 1,
+	BreakJumpAbs = 1,
+	BreakDodgeAbs = 1,
+	ComboMode = "Fastest",
 	ComboOnly = false,
+	CustomCombo = false,
+	ComboMap = {},
 	DodgeSpeed = 1,
 	DodgeRange = 1,
-	DodgeCooldown = 0.4,
-	AutoFace = false,
-	AutoFaceMode = "CFrame",
-	AutoFaceSpeed = 16,
-	FaceCone = 38,
-	ParryChance = 0.48,
-	DodgeChance = 0.36,
-	IntentionalBlock = true,
-	IntentionalBlockChance = 0.28,
-	HumanDelay = true,
-	HumanDelayMin = 0.032,
-	HumanDelayMax = 0.078,
-	ToggleKey = Enum.KeyCode.Insert,
-	EspCycleKey = Enum.KeyCode.RightAlt,
-	DumpKey = Enum.KeyCode.G,
+	DodgeCooldown = 0.15,
+	ParryChance = 1,
+	DodgeChance = 1,
+	IntentionalBlock = false,
+	IntentionalBlockChance = 0,
+	HumanDelay = false,
+	HumanDelayMin = 0,
+	HumanDelayMax = 0,
 	EspStyle = "Soul",
+	EspColorA = Color3.fromRGB(70, 230, 255),
+	EspColorB = Color3.fromRGB(190, 80, 255),
+	EspSpeed = 1,
+	EspThick = 2,
 	ReachPad = 0.65,
 	ParryLead = 0,
 	DodgeLead = 0.22,
@@ -52,22 +53,39 @@ local Config = {
 	HitboxPhysics = "UseAnother",
 	HitboxAnimSpeed = 0.7,
 	HitboxFallSpeed = 0.45,
+	HitboxColorA = Color3.fromRGB(70, 230, 255),
+	HitboxColorB = Color3.fromRGB(190, 80, 255),
 	GodMode = false,
-	Skin = "",
-	SkinKey = Enum.KeyCode.RightBracket,
+	Speed = false,
+	SpeedValue = 32,
+	NoClip = false,
+	NoSlowdown = false,
+	NoStun = false,
+	NoDelay = false,
+	WeaponSkins = {},
 	HitSound = true,
 	HitSoundPreset = "Fatality",
 	HitSoundVolume = 3.5,
-	HitParticles = true,
+	HitRing = true,
+	HitRingLife = 1.85,
+	HitRingR0 = 0.45,
+	HitRingR1 = 5.6,
+	HitRingThick = 3,
+	HitRingColorA = Color3.fromRGB(70, 230, 255),
+	HitRingColorB = Color3.fromRGB(190, 80, 255),
 	ParrySound = true,
 	ParrySoundPreset = "SuccessFX",
 	ParrySoundVolume = 3.5,
 	AttackHelper = true,
 	PerfectDodgeCounter = true,
+	AHPunishBlock = true,
+	AHPunishWhiff = true,
+	AHJumpChase = true,
 	StaffDetect = true,
 	CustomModel = true,
 	CustomModelMaterial = "Glass",
 	CustomModelColor = Color3.fromRGB(186, 150, 255),
+	CustomModelTransparency = 0.18,
 	OutlineColor = Color3.fromRGB(255, 92, 163),
 	Debug = false,
 }
@@ -268,7 +286,24 @@ local function ingestInfo(info)
 		radius = tonumber(info.RootColliderRadius) or 2.5,
 		dodgeDist = tonumber(info.DodgeDistance) or 1,
 		attacks = {},
+		cosmetics = {},
 	}
+	do
+		local c = info.Cosmetics
+		if type(c) == "table" then
+			for name, mod in c do
+				if type(name) == "string" and mod ~= nil and type(mod) ~= "function" then
+					pack.cosmetics[#pack.cosmetics + 1] = name
+				end
+			end
+			table.sort(pack.cosmetics)
+		elseif typeof(c) == "Instance" then
+			for _, ch in c:GetChildren() do
+				pack.cosmetics[#pack.cosmetics + 1] = ch.Name
+			end
+			table.sort(pack.cosmetics)
+		end
+	end
 	local fwdId = animIdOf(info.DodgeForwardAnimation)
 	local backId = animIdOf(info.DodgeBackwardAnimation)
 	if fwdId then
@@ -477,10 +512,19 @@ local function lerpColor(a, b, t)
 	return Color3.new(a.R + (b.R - a.R) * t, a.G + (b.G - a.G) * t, a.B + (b.B - a.B) * t)
 end
 
-local function gradAlong(t)
-	local u = t % 1
+local function gradAlong(t, a, b)
+	local spd = a == nil and (Config.EspSpeed or 1) or 1
+	local u = (t * spd) % 1
 	local s = 0.5 - 0.5 * math.cos(u * 6.283185307179586)
-	return lerpColor(CYAN, MAGENTA, s)
+	local ca = a or Config.EspColorA or CYAN
+	local cb = b or Config.EspColorB or MAGENTA
+	if typeof(ca) ~= "Color3" then
+		ca = CYAN
+	end
+	if typeof(cb) ~= "Color3" then
+		cb = MAGENTA
+	end
+	return lerpColor(ca, cb, s)
 end
 
 local linePool = {}
@@ -1089,7 +1133,7 @@ local function playParrySound()
 end
 
 local function spawnHitFX(pos)
-	if not Config.HitParticles then
+	if not Config.HitRing then
 		return
 	end
 	while #hitSparks > 4 do
@@ -1103,9 +1147,9 @@ local function spawnHitFX(pos)
 		kind = "ring",
 		pos = Vector3.new(pos.X, fy + 0.08, pos.Z),
 		spawn = os.clock(),
-		life = 1.85,
-		r0 = 0.45,
-		r1 = 5.6,
+		life = Config.HitRingLife or 1.85,
+		r0 = Config.HitRingR0 or 0.45,
+		r1 = Config.HitRingR1 or 5.6,
 	}
 end
 
@@ -1236,14 +1280,14 @@ local function renderHitFX(now)
 			local segs = 48
 			local prev
 			local y = p.pos.Y
-			local col = gradAlong(now * 0.12)
+			local col = gradAlong(now * 0.12, Config.HitRingColorA, Config.HitRingColorB)
 			for k = 0, segs do
 				local a = k / segs * 6.283185307179586
 				local wob = 1 + 0.028 * math.sin(a * 2 + t * 1.6)
 				local rr = rad * wob
 				local pt = Vector3.new(p.pos.X + math.cos(a) * rr, y, p.pos.Z + math.sin(a) * rr)
 				if prev then
-					line3(prev, pt, col, 3, alpha)
+					line3(prev, pt, col, Config.HitRingThick or 3, alpha)
 				end
 				prev = pt
 			end
@@ -1325,7 +1369,7 @@ local function renderMirror(boxCF, size, vis, now, shards, physics, floorY, rest
 			sh.wb = wb
 			local amp = (wa - wb).Magnitude * (0.035 + 0.07 * fly)
 			local p0, p1, p2, p3 = shardWarp(wa, wb, sh.k, now, amp)
-			local col = gradAlong(sh.k / 36 + now * 0.28)
+			local col = gradAlong(sh.k / 36 + now * 0.28, Config.HitboxColorA, Config.HitboxColorB)
 			local alpha = 0.94 * vis * u
 			if (sh._sink or 0) > 0 then
 				alpha *= math.max(0, 1 - sh._sink)
@@ -1575,16 +1619,6 @@ local function pressDodge(lh)
 	end
 	lh._desiredDodge = 0.26666666666666666
 	lastDodgeAt = os.clock()
-	task.defer(function()
-		local act = lh.ActionManager and lh.ActionManager.CurrentAction
-		if act and act.ActionType == "Dodge" and act.MovementProperties then
-			local dd = (act.DodgeDistance or 1) * (Config.DodgeRange or 1)
-			act.DodgeDistance = dd
-			local v = 40 * dd * (Config.DodgeSpeed or 1)
-			act.MovementProperties.velocity = v
-			act.MovementProperties.velocityDecay = v * 1.5
-		end
-	end)
 	return true
 end
 
@@ -1712,7 +1746,7 @@ local function applySkin(name)
 		print("[DG-AP] skin err:", tostring(err))
 		return false
 	end
-	Config.Skin = name
+	Config.WeaponSkins[tostring(lh.EquippedWeapon)] = name
 	lastSkin = name .. ":" .. tostring(lh.EquippedWeapon)
 	print("[DG-AP] skin=" .. name .. " weapon=" .. tostring(lh.EquippedWeapon))
 	return true
@@ -1928,7 +1962,7 @@ local function stepCosmetics(now, lh)
 		ol = Color3.fromRGB(255, 92, 163)
 	end
 	local vis = lh.Model or lh.OriginalModel
-	paintParts(vis, mat, cosmeticStore.body, col, 0.18, "body")
+	paintParts(vis, mat, cosmeticStore.body, col, Config.CustomModelTransparency or 0.18, "body")
 	local hl = ensureHighlight(vis, "hlBody")
 	if hl then
 		hl.FillTransparency = 1
@@ -2048,11 +2082,24 @@ local function bestOfKind(lh, threat, wantKind, needBreak)
 		return rec
 	end
 	local combo = comboAttackName(lh, wantKind)
+	if Config.CustomCombo then
+		local w = equippedName(lh.OriginalModel)
+		local map = w and Config.ComboMap[w]
+		local list = map and map[wantKind]
+		if type(list) == "table" then
+			for _, name in list do
+				local rec = fits(name)
+				if rec then
+					return rec
+				end
+			end
+		end
+	end
 	local rec = fits(combo)
 	if rec then
 		return rec
 	end
-	if Config.ComboOnly then
+	if Config.ComboOnly or Config.ComboMode == "GameCombo" then
 		return nil
 	end
 	local starter = wantKind == "Heavy" and "Heavy01" or "Light01"
@@ -2302,6 +2349,7 @@ local dbg = {
 	enemyBlock = 0,
 	lastHp = nil,
 	lastThreat = "",
+	_cidx = {},
 }
 
 dbg._hd = function(remain, needRemain)
@@ -2561,7 +2609,7 @@ local function tryAttackHelper(lh, threat)
 					local travel = dodgeTravel(lh)
 					local dReach = ourReach(lh, "DashLight")
 					if isRev then
-					elseif swinging and not isRev and not ahDodgeLock[lockK] then
+					elseif Config.AHJumpChase and swinging and not isRev and not ahDodgeLock[lockK] then
 						local incoming = threat and threat.model == model and (threat.remain or 0) > 0.04 and not threat.windup
 						if not incoming then
 							local jHit = hitT("JumpAttack")
@@ -2655,7 +2703,7 @@ local function tryAttackHelper(lh, threat)
 				local travel = dodgeTravel(lh)
 				local vel = enemyVel(model, root)
 				local recede = recedingFrom(lh, root, vel)
-				if blocking and not blockPunished[model] then
+				if Config.AHPunishBlock and blocking and not blockPunished[model] then
 					local replicaAge = blockAge or 0
 					local standR = ourReach(lh, nextL)
 					local standOk = d <= standR
@@ -2700,7 +2748,7 @@ local function tryAttackHelper(lh, threat)
 						return true
 					end
 				end
-				if recovering and (now - lastAH) > 0.45 and (now - lastDodgeAt) > 0.5 and (now - lastTakenAt) > 0.65 then
+				if Config.AHPunishWhiff and recovering and (now - lastAH) > 0.45 and (now - lastDodgeAt) > 0.5 and (now - lastTakenAt) > 0.65 then
 					if fire(nextL, "WHIFF", model, root, 0) then
 						return true
 					end
@@ -2938,25 +2986,119 @@ local function styleIndex()
 	return 1
 end
 
-bind(RunService.Heartbeat, function()
+bind(RunService.Heartbeat, function(dt)
 	if not running or not Config.Enabled then
 		return
 	end
+	if type(dt) ~= "number" then
+		dt = 0.016
+	end
 	local lh = localHandler()
-	if Config.Skin and Config.Skin ~= "" and lh then
-		local tag = Config.Skin .. ":" .. tostring(lh.EquippedWeapon)
-		if tag ~= lastSkin then
-			applySkin(Config.Skin)
-		end
-	end
-	if not Config.GodMode then
-		return
-	end
 	if not lh then
 		return
 	end
-	lh.IsDodging = true
-	pressDodge(lh)
+	local w = tostring(lh.EquippedWeapon)
+	local want = Config.WeaponSkins[w]
+	if type(want) == "string" and want ~= "" then
+		local tag = want .. ":" .. w
+		if tag ~= lastSkin then
+			applySkin(want)
+		end
+	end
+	local am = lh.ActionManager
+	if am and not dbg._tqHook and type(am.TryQueueBasicAttack) == "function" then
+		dbg._tqHook = true
+		local old = am.TryQueueBasicAttack
+		pcall(function()
+			hookfunction(old, function(self, kind, ...)
+				if Config.CustomCombo and (kind == "Light" or kind == "Heavy") then
+					local ww = equippedName(self.CharacterHandler and self.CharacterHandler.OriginalModel)
+					local map = ww and Config.ComboMap[ww]
+					local list = map and map[kind]
+					if type(list) == "table" and #list > 0 then
+						local key = ww .. tostring(kind)
+						local i = (dbg._cidx[key] or 0) % #list + 1
+						dbg._cidx[key] = i
+						local name = list[i]
+						if kind == "Light" then
+							self:SetNextLightAttackName(name, 2)
+						else
+							self:SetNextHeavyAttackName(name, 2)
+						end
+					end
+				end
+				local r = old(self, kind, ...)
+				if Config.NoDelay and type(self._queuedActionProperties) == "table" then
+					self._queuedActionProperties.predictionEndTime = os.clock()
+				end
+				return r
+			end)
+		end)
+	end
+	if lh.IsDodging and am then
+		local act = am.CurrentAction
+		if act and act.ActionType == "Dodge" and act.MovementProperties then
+			local wname = equippedName(lh.OriginalModel)
+			local base = 1
+			if type(wname) == "string" and catalog[wname] then
+				base = catalog[wname].dodgeDist or 1
+			end
+			local dd = base * (Config.DodgeRange or 1)
+			act.DodgeDistance = dd
+			local v = 40 * dd * (Config.DodgeSpeed or 1)
+			act.MovementProperties.velocity = v
+			act.MovementProperties.velocityDecay = v * 1.5
+		end
+	end
+	if Config.NoStun then
+		lh.IsStaggered = false
+		local cur = am and am.CurrentAction
+		if cur and cur.ActionType == "Stagger" then
+			cur.CanCancel = true
+			cur.CanChainBasicAttack = true
+			pcall(function()
+				cur:CompleteSequence()
+			end)
+		end
+	end
+	if Config.NoSlowdown and not lh.IsDodging then
+		local hum = lh.Humanoid
+		local spd = 17
+		local wh = weaponHandler(lh)
+		if wh and wh.WeaponInfo and type(wh.WeaponInfo.RunSpeed) == "number" then
+			spd = wh.WeaponInfo.RunSpeed
+		end
+		if hum and (hum.WalkSpeed or 0) < spd * 0.92 then
+			hum.WalkSpeed = spd
+		end
+	end
+	if Config.Speed and lh.Root then
+		local dir = lh.DesiredMoveDirection
+		if typeof(dir) == "Vector3" and dir.Magnitude > 0.05 then
+			local step = dir.Unit * (Config.SpeedValue or 32) * dt
+			lh.Root.CFrame = lh.Root.CFrame + step
+		end
+	end
+	if Config.NoClip then
+		if lh.Root then
+			lh.Root.CanCollide = false
+		end
+		if lh.RemoteCollider then
+			lh.RemoteCollider.CanCollide = false
+		end
+		local vis = lh.Model or lh.OriginalModel
+		if vis then
+			for _, d in vis:GetDescendants() do
+				if d:IsA("BasePart") then
+					d.CanCollide = false
+				end
+			end
+		end
+	end
+	if Config.GodMode then
+		lh.IsDodging = true
+		pressDodge(lh)
+	end
 end)
 
 bind(RunService.RenderStepped, function(dt)
@@ -3133,9 +3275,6 @@ bind(RunService.RenderStepped, function(dt)
 			dbg.seen[threat.swing.uid] = true
 			clog("THREAT", string.format("parryable=%s windup=%s saDmg=%.0f imp=%s/%s %s", tostring(threat.canParry), tostring(threat.windup), threat.saDmg or 0, tostring(threat.impIndex or 1), tostring(threat.impN or 1), ourHits(lh)), threat, lh)
 		end
-	end
-	if threat and threat.will and threat.root and lh and lh.Root and Config.AutoFace then
-		faceTarget(lh, threat.root, dt)
 	end
 	if lh and Config.AttackHelper and pressed.kind == nil then
 		tryAttackHelper(lh, threat)
@@ -3687,47 +3826,6 @@ bind(RunService.RenderStepped, function(dt)
 	endFrame()
 end)
 
-bind(UserInputService.InputBegan, function(input, gp)
-	if gp then
-		return
-	end
-	local ui = genv._DGAP
-	if not (ui and ui.uiBound) then
-		if input.KeyCode == Config.DumpKey then
-			dumpDebug()
-			return
-		end
-		if input.KeyCode == Config.SkinKey then
-			cycleSkin()
-			return
-		end
-		if input.KeyCode == Config.ToggleKey then
-			Config.Enabled = not Config.Enabled
-			if not Config.Enabled then
-				releaseGuard(localHandler())
-				pressed.kind = nil
-			end
-			return
-		end
-		if input.KeyCode == Config.EspCycleKey then
-			local i = styleIndex() % #ESP_STYLES + 1
-			Config.EspStyle = ESP_STYLES[i]
-			print("[DG-AP] esp=" .. Config.EspStyle)
-			return
-		end
-	end
-	local map = {
-		[Enum.KeyCode.One] = "Soul",
-		[Enum.KeyCode.Two] = "Skeleton",
-		[Enum.KeyCode.Three] = "Rift",
-		[Enum.KeyCode.Four] = "Weave",
-	}
-	local s = map[input.KeyCode]
-	if s then
-		Config.EspStyle = s
-	end
-end)
-
 local function isLocalModel(model)
 	return CharacterController:IsLocalCharacterModel(model) or model:GetAttribute("UserId") == LocalPlayer.UserId
 end
@@ -3815,6 +3913,7 @@ function genv._DGAP.buildUI(ctx)
 		return
 	end
 	genv._DGAP.uiBound = true
+	genv._DGAP.maclib = ctx.MacLib
 	local uiReady = false
 	task.defer(function()
 		uiReady = true
@@ -3827,6 +3926,8 @@ function genv._DGAP.buildUI(ctx)
 	local function disc(section, text)
 		section:SubLabel({ Text = text })
 	end
+	local els = {}
+	genv._DGAP.els = els
 	local function feature(section, o)
 		local guard, togEl = false, nil
 		local function commit(val)
@@ -3850,31 +3951,33 @@ function genv._DGAP.buildUI(ctx)
 				end
 			end,
 		}, ctx.flag(o.Flag))
+		els[o.Flag] = togEl
 		if o.Desc then
 			disc(section, o.Desc)
 		end
 		ctx.keybind(section, {
 			Name = "Keybind",
 			Flag = ctx.flag(o.Flag .. "_KB"),
-			OnBinded = o.OnBinded,
 			Toggle = function()
 				commit(not o.get())
 			end,
 		})
 		return { commit = commit }
 	end
-	local function boolToggle(section, name, flag, get, set, desc)
-		section:Toggle({
-			Name = name,
+	local function enable(section, flag, get, set, desc)
+		local el = section:Toggle({
+			Name = "Enabled",
 			Default = get() and true or false,
 			Callback = function(v)
 				set(v and true or false)
-				notify(name, v and "Enabled" or "Disabled")
+				notify(flag, v and "Enabled" or "Disabled")
 			end,
 		}, ctx.flag(flag))
+		els[flag] = el
 		if desc then
 			disc(section, desc)
 		end
+		return el
 	end
 	local function slider(section, o)
 		local el = section:Slider({
@@ -3886,19 +3989,163 @@ function genv._DGAP.buildUI(ctx)
 			Suffix = o.Suffix,
 			Callback = o.Callback,
 		}, ctx.flag(o.Flag))
+		els[o.Flag] = el
 		if o.Desc then
 			disc(section, o.Desc)
 		end
 		return el
 	end
-	local function bind(section, o)
-		ctx.keybind(section, {
-			Name = o.Name or "Keybind",
-			Flag = ctx.flag(o.Flag),
-			OnBinded = o.OnBinded,
-			Toggle = o.Toggle,
-		})
+	local function pushEl(flag, val)
+		local el = els[flag]
+		if not el then
+			return
+		end
+		if el.UpdateState then
+			pcall(function()
+				el:UpdateState(val and true or false)
+			end)
+		elseif el.UpdateValue then
+			pcall(function()
+				el:UpdateValue(val, true)
+			end)
+		elseif el.UpdateSelection then
+			pcall(function()
+				el:UpdateSelection(val)
+			end)
+		elseif el.SetColor then
+			pcall(function()
+				el:SetColor(val)
+			end)
+		end
 	end
+	local PRESETS = {
+		Blatant = {
+			AutoParry = true,
+			AutoDodge = true,
+			SmartInterrupt = true,
+			JumpAttackCounter = true,
+			BreakLight = true,
+			BreakHeavy = true,
+			BreakJump = true,
+			BreakDodge = true,
+			BreakLightChance = 1,
+			BreakHeavyChance = 1,
+			BreakJumpChance = 1,
+			BreakDodgeChance = 1,
+			BreakLightAbs = 1,
+			BreakHeavyAbs = 1,
+			BreakJumpAbs = 1,
+			BreakDodgeAbs = 1,
+			ComboMode = "Fastest",
+			ComboOnly = false,
+			CustomCombo = false,
+			ParryChance = 1,
+			DodgeChance = 1,
+			IntentionalBlock = false,
+			IntentionalBlockChance = 0,
+			HumanDelay = false,
+			HumanDelayMin = 0,
+			HumanDelayMax = 0,
+			ParryLead = 0,
+			DodgeLead = 0.22,
+			AttackHelper = true,
+			PerfectDodgeCounter = true,
+			AHPunishBlock = true,
+			AHPunishWhiff = true,
+			AHJumpChase = true,
+			NoDelay = true,
+		},
+		SemiLegit = {
+			AutoParry = true,
+			AutoDodge = true,
+			SmartInterrupt = true,
+			JumpAttackCounter = false,
+			BreakLight = true,
+			BreakHeavy = true,
+			BreakJump = true,
+			BreakDodge = true,
+			BreakLightChance = 0.45,
+			BreakHeavyChance = 0.7,
+			BreakJumpChance = 0.28,
+			BreakDodgeChance = 0.55,
+			BreakLightAbs = 0.75,
+			BreakHeavyAbs = 0.8,
+			BreakJumpAbs = 0.5,
+			BreakDodgeAbs = 0.75,
+			ComboMode = "Fastest",
+			ComboOnly = false,
+			CustomCombo = false,
+			ParryChance = 0.7,
+			DodgeChance = 0.55,
+			IntentionalBlock = true,
+			IntentionalBlockChance = 0.18,
+			HumanDelay = true,
+			HumanDelayMin = 0.018,
+			HumanDelayMax = 0.042,
+			ParryLead = 0,
+			DodgeLead = 0.22,
+			AttackHelper = true,
+			PerfectDodgeCounter = true,
+			AHPunishBlock = true,
+			AHPunishWhiff = false,
+			AHJumpChase = false,
+			NoDelay = false,
+		},
+		Legit = {
+			AutoParry = true,
+			AutoDodge = true,
+			SmartInterrupt = true,
+			JumpAttackCounter = false,
+			BreakLight = true,
+			BreakHeavy = true,
+			BreakJump = true,
+			BreakDodge = true,
+			BreakLightChance = 0.25,
+			BreakHeavyChance = 0.45,
+			BreakJumpChance = 0.18,
+			BreakDodgeChance = 0.4,
+			BreakLightAbs = 0.7,
+			BreakHeavyAbs = 0.65,
+			BreakJumpAbs = 0.4,
+			BreakDodgeAbs = 0.7,
+			ComboMode = "Fastest",
+			ComboOnly = false,
+			CustomCombo = false,
+			ParryChance = 0.48,
+			DodgeChance = 0.36,
+			IntentionalBlock = true,
+			IntentionalBlockChance = 0.28,
+			HumanDelay = true,
+			HumanDelayMin = 0.032,
+			HumanDelayMax = 0.078,
+			ParryLead = 0,
+			DodgeLead = 0.22,
+			AttackHelper = true,
+			PerfectDodgeCounter = true,
+			AHPunishBlock = true,
+			AHPunishWhiff = true,
+			AHJumpChase = false,
+			NoDelay = false,
+		},
+	}
+	local presetGuard = false
+	local function applyPreset(name)
+		local p = PRESETS[name]
+		if not p then
+			return
+		end
+		presetGuard = true
+		Config.Preset = name
+		for k, v in p do
+			Config[k] = v
+			pushEl("DG_" .. k, v)
+		end
+		pushEl("DG_Preset", name)
+		pushEl("DG_ComboMode", Config.ComboMode)
+		presetGuard = false
+		notify("Preset", name)
+	end
+	genv._DGAP.applyPreset = applyPreset
 
 	local AutoParry = ctx.tabs.AutoParry
 	local Attack = ctx.tabs.Attack
@@ -3910,13 +4157,22 @@ function genv._DGAP.buildUI(ctx)
 		return
 	end
 
+	local weapons = {}
+	for name in catalog do
+		weapons[#weapons + 1] = name
+	end
+	table.sort(weapons)
+	if #weapons == 0 then
+		weapons[1] = "Katana"
+	end
+
 	-- ════════════════════════════════ AutoParry ════════════════════════════
-	local apL = AutoParry:Section({ Side = "Left" })
-	apL:Header({ Name = "Master" })
-	feature(apL, {
+	local apBase = AutoParry:Section({ Side = "Left" })
+	apBase:Header({ Name = "AutoParry" })
+	feature(apBase, {
 		Title = "AutoParry",
 		Flag = "DG_Enabled",
-		Desc = "Kills the whole defense/offense loop. Off = idle.",
+		Desc = "Master switch. Off = the script does nothing.",
 		get = function()
 			return Config.Enabled
 		end,
@@ -3927,41 +4183,52 @@ function genv._DGAP.buildUI(ctx)
 				pressed.kind = nil
 			end
 		end,
-		OnBinded = function(k)
-			Config.ToggleKey = k
-		end,
 	})
+	els.DG_Preset = apBase:Dropdown({
+		Name = "Preset",
+		Options = { "Blatant", "SemiLegit", "Legit" },
+		Default = Config.Preset or "Blatant",
+		Callback = function(v)
+			if not presetGuard then
+				applyPreset(v)
+			end
+		end,
+	}, ctx.flag("DG_Preset"))
+	disc(apBase, "Blatant = always defend and always counter. SemiLegit = mixed. Legit = current human rolls.")
 
-	apL:Divider()
-	apL:Header({ Name = "Defense" })
-	boolToggle(apL, "Auto Parry", "DG_AutoParry", function()
+	apBase:Divider()
+	apBase:Header({ Name = "Auto Parry" })
+	enable(apBase, "DG_AutoParry", function()
 		return Config.AutoParry
 	end, function(v)
 		Config.AutoParry = v
-	end, "Tap guard into the parry window.")
-	boolToggle(apL, "Auto Dodge", "DG_AutoDodge", function()
+	end, "Tap guard into the 0.233s parry window.")
+
+	apBase:Divider()
+	apBase:Header({ Name = "Auto Dodge" })
+	enable(apBase, "DG_AutoDodge", function()
 		return Config.AutoDodge
 	end, function(v)
 		Config.AutoDodge = v
-	end, "Iframe dodge when the roll lands. Priority over parry.")
-	boolToggle(apL, "Smart Interrupt", "DG_SmartInt", function()
-		return Config.SmartInterrupt
-	end, function(v)
-		Config.SmartInterrupt = v
-	end, "Break their swing with ours when the hit lands first.")
-	slider(apL, {
+	end, "Iframe dodge. Highest priority when the roll lands.")
+
+	local apChance = AutoParry:Section({ Side = "Left" })
+	apChance:Header({ Name = "Chances" })
+	disc(apChance, "Chance = how often this option is picked when it is available.")
+	disc(apChance, "Commit = after pick, chance we actually do it. 1 = never skip.")
+	slider(apChance, {
 		Name = "Dodge Chance",
 		Flag = "DG_DodgeChance",
 		Default = Config.DodgeChance,
 		Min = 0,
 		Max = 1,
 		Precision = 2,
-		Desc = "Sticky per-swing. Dodge is first in the legit stack.",
+		Desc = "First in the stack. If this roll fails, parry is considered.",
 		Callback = function(v)
 			Config.DodgeChance = v
 		end,
 	})
-	slider(apL, {
+	slider(apChance, {
 		Name = "Parry Chance",
 		Flag = "DG_ParryChance",
 		Default = Config.ParryChance,
@@ -3973,37 +4240,29 @@ function genv._DGAP.buildUI(ctx)
 			Config.ParryChance = v
 		end,
 	})
-
-	apL:Divider()
-	apL:Header({ Name = "Intentional Block" })
-	boolToggle(apL, "Intentional Block", "DG_IntBlock", function()
-		return Config.IntentionalBlock
-	end, function(v)
-		Config.IntentionalBlock = v
-	end, "Hold guard so the parry window burns and the hit lands as a block.")
-	slider(apL, {
+	slider(apChance, {
 		Name = "Block Chance",
-		Flag = "DG_IntBlockChance",
+		Flag = "DG_IntentionalBlockChance",
 		Default = Config.IntentionalBlockChance,
 		Min = 0,
 		Max = 1,
 		Precision = 2,
-		Desc = "Rolled after parry is skipped. Lowest priority.",
+		Desc = "Lowest. Hold guard so the parry window burns and the hit is a block.",
 		Callback = function(v)
 			Config.IntentionalBlockChance = v
 		end,
 	})
 
-	apL:Divider()
-	apL:Header({ Name = "Human Delay" })
-	boolToggle(apL, "Human Delay", "DG_HumanDelay", function()
+	local apDelay = AutoParry:Section({ Side = "Left" })
+	apDelay:Header({ Name = "Human Delay" })
+	enable(apDelay, "DG_HumanDelay", function()
 		return Config.HumanDelay
 	end, function(v)
 		Config.HumanDelay = v
-	end, "Random wait that still fits the remaining window.")
-	slider(apL, {
+	end, "Random wait that still fits the remaining window. 0 = instant.")
+	slider(apDelay, {
 		Name = "Delay Min",
-		Flag = "DG_HDMin",
+		Flag = "DG_HumanDelayMin",
 		Default = Config.HumanDelayMin,
 		Min = 0,
 		Max = 0.2,
@@ -4011,14 +4270,11 @@ function genv._DGAP.buildUI(ctx)
 		Suffix = "s",
 		Callback = function(v)
 			Config.HumanDelayMin = v
-			if Config.HumanDelayMax < v then
-				Config.HumanDelayMax = v
-			end
 		end,
 	})
-	slider(apL, {
+	slider(apDelay, {
 		Name = "Delay Max",
-		Flag = "DG_HDMax",
+		Flag = "DG_HumanDelayMax",
 		Default = Config.HumanDelayMax,
 		Min = 0,
 		Max = 0.2,
@@ -4026,22 +4282,27 @@ function genv._DGAP.buildUI(ctx)
 		Suffix = "s",
 		Callback = function(v)
 			Config.HumanDelayMax = v
-			if Config.HumanDelayMin > v then
-				Config.HumanDelayMin = v
-			end
 		end,
 	})
 
-	local apR = AutoParry:Section({ Side = "Right" })
-	apR:Header({ Name = "Interrupts" })
-	boolToggle(apR, "Break Light", "DG_BrkL", function()
+	local apPlay = AutoParry:Section({ Side = "Right" })
+	apPlay:Header({ Name = "AutoPlay" })
+	enable(apPlay, "DG_SmartInterrupt", function()
+		return Config.SmartInterrupt
+	end, function(v)
+		Config.SmartInterrupt = v
+	end, "Break their swing with ours when our hit lands first.")
+
+	apPlay:Divider()
+	apPlay:Header({ Name = "Break Light" })
+	enable(apPlay, "DG_BreakLight", function()
 		return Config.BreakLight
 	end, function(v)
 		Config.BreakLight = v
-	end)
-	slider(apR, {
-		Name = "Light Chance",
-		Flag = "DG_BrkLCh",
+	end, "Interrupt Lights with Light (or Heavy if Light does not fit).")
+	slider(apPlay, {
+		Name = "Chance",
+		Flag = "DG_BreakLightChance",
 		Default = Config.BreakLightChance,
 		Min = 0,
 		Max = 1,
@@ -4050,26 +4311,28 @@ function genv._DGAP.buildUI(ctx)
 			Config.BreakLightChance = v
 		end,
 	})
-	slider(apR, {
-		Name = "Light Commit",
-		Flag = "DG_BrkLAbs",
+	slider(apPlay, {
+		Name = "Commit",
+		Flag = "DG_BreakLightAbs",
 		Default = Config.BreakLightAbs,
 		Min = 0,
 		Max = 1,
 		Precision = 2,
-		Desc = "How sure the Light interrupt has to look before we take it.",
 		Callback = function(v)
 			Config.BreakLightAbs = v
 		end,
 	})
-	boolToggle(apR, "Break Heavy", "DG_BrkH", function()
+
+	apPlay:Divider()
+	apPlay:Header({ Name = "Break Heavy" })
+	enable(apPlay, "DG_BreakHeavy", function()
 		return Config.BreakHeavy
 	end, function(v)
 		Config.BreakHeavy = v
-	end)
-	slider(apR, {
-		Name = "Heavy Chance",
-		Flag = "DG_BrkHCh",
+	end, "Interrupt Heavies/Ult with Heavy only if we land first.")
+	slider(apPlay, {
+		Name = "Chance",
+		Flag = "DG_BreakHeavyChance",
 		Default = Config.BreakHeavyChance,
 		Min = 0,
 		Max = 1,
@@ -4078,9 +4341,9 @@ function genv._DGAP.buildUI(ctx)
 			Config.BreakHeavyChance = v
 		end,
 	})
-	slider(apR, {
-		Name = "Heavy Commit",
-		Flag = "DG_BrkHAbs",
+	slider(apPlay, {
+		Name = "Commit",
+		Flag = "DG_BreakHeavyAbs",
 		Default = Config.BreakHeavyAbs,
 		Min = 0,
 		Max = 1,
@@ -4089,14 +4352,17 @@ function genv._DGAP.buildUI(ctx)
 			Config.BreakHeavyAbs = v
 		end,
 	})
-	boolToggle(apR, "Break Jump", "DG_BrkJ", function()
+
+	apPlay:Divider()
+	apPlay:Header({ Name = "Break Jump" })
+	enable(apPlay, "DG_BreakJump", function()
 		return Config.BreakJump
 	end, function(v)
 		Config.BreakJump = v
 	end)
-	slider(apR, {
-		Name = "Jump Chance",
-		Flag = "DG_BrkJCh",
+	slider(apPlay, {
+		Name = "Chance",
+		Flag = "DG_BreakJumpChance",
 		Default = Config.BreakJumpChance,
 		Min = 0,
 		Max = 1,
@@ -4105,9 +4371,9 @@ function genv._DGAP.buildUI(ctx)
 			Config.BreakJumpChance = v
 		end,
 	})
-	slider(apR, {
-		Name = "Jump Commit",
-		Flag = "DG_BrkJAbs",
+	slider(apPlay, {
+		Name = "Commit",
+		Flag = "DG_BreakJumpAbs",
 		Default = Config.BreakJumpAbs,
 		Min = 0,
 		Max = 1,
@@ -4116,14 +4382,17 @@ function genv._DGAP.buildUI(ctx)
 			Config.BreakJumpAbs = v
 		end,
 	})
-	boolToggle(apR, "Break Dodge", "DG_BrkD", function()
+
+	apPlay:Divider()
+	apPlay:Header({ Name = "Break Dodge" })
+	enable(apPlay, "DG_BreakDodge", function()
 		return Config.BreakDodge
 	end, function(v)
 		Config.BreakDodge = v
-	end, "Dodge+DashLight follow when we skip a standing interrupt.")
-	slider(apR, {
-		Name = "Dodge Break Chance",
-		Flag = "DG_BrkDCh",
+	end, "Dodge + DashLight follow when a standing interrupt is skipped.")
+	slider(apPlay, {
+		Name = "Chance",
+		Flag = "DG_BreakDodgeChance",
 		Default = Config.BreakDodgeChance,
 		Min = 0,
 		Max = 1,
@@ -4132,9 +4401,9 @@ function genv._DGAP.buildUI(ctx)
 			Config.BreakDodgeChance = v
 		end,
 	})
-	slider(apR, {
-		Name = "Dodge Break Commit",
-		Flag = "DG_BrkDAbs",
+	slider(apPlay, {
+		Name = "Commit",
+		Flag = "DG_BreakDodgeAbs",
 		Default = Config.BreakDodgeAbs,
 		Min = 0,
 		Max = 1,
@@ -4144,9 +4413,9 @@ function genv._DGAP.buildUI(ctx)
 		end,
 	})
 
-	apR:Divider()
-	apR:Header({ Name = "Timing" })
-	slider(apR, {
+	local apTime = AutoParry:Section({ Side = "Right" })
+	apTime:Header({ Name = "Timing" })
+	slider(apTime, {
 		Name = "Parry Lead",
 		Flag = "DG_ParryLead",
 		Default = Config.ParryLead,
@@ -4159,7 +4428,7 @@ function genv._DGAP.buildUI(ctx)
 			Config.ParryLead = v
 		end,
 	})
-	slider(apR, {
+	slider(apTime, {
 		Name = "Dodge Lead",
 		Flag = "DG_DodgeLead",
 		Default = Config.DodgeLead,
@@ -4172,7 +4441,7 @@ function genv._DGAP.buildUI(ctx)
 			Config.DodgeLead = v
 		end,
 	})
-	slider(apR, {
+	slider(apTime, {
 		Name = "Hold After",
 		Flag = "DG_HoldAfter",
 		Default = Config.HoldAfter,
@@ -4184,30 +4453,41 @@ function genv._DGAP.buildUI(ctx)
 			Config.HoldAfter = v
 		end,
 	})
-	slider(apR, {
-		Name = "Min Remaining",
-		Flag = "DG_MinRemain",
-		Default = Config.MinRemaining,
-		Min = -0.1,
-		Max = 0.1,
-		Precision = 3,
-		Suffix = "s",
-		Callback = function(v)
-			Config.MinRemaining = v
-		end,
-	})
-	slider(apR, {
+	slider(apTime, {
 		Name = "Reach Pad",
 		Flag = "DG_ReachPad",
 		Default = Config.ReachPad,
 		Min = 0,
 		Max = 2,
 		Precision = 2,
-		Desc = "Extra studs on will-hit. Too fat = fake threats.",
+		Desc = "Extra studs on will-hit.",
 		Callback = function(v)
 			Config.ReachPad = v
 		end,
 	})
+
+	local apBlock = AutoParry:Section({ Side = "Right" })
+	apBlock:Header({ Name = "Block" })
+	enable(apBlock, "DG_IntentionalBlock", function()
+		return Config.IntentionalBlock
+	end, function(v)
+		Config.IntentionalBlock = v
+	end, "Hold instead of tap so the parry window expires. Chance is in Chances.")
+
+	local apCombo = AutoParry:Section({ Side = "Right" })
+	apCombo:Header({ Name = "Combo" })
+	els.DG_ComboMode = apCombo:Dropdown({
+		Name = "Combo Mode",
+		Options = { "Fastest", "GameCombo", "Custom" },
+		Default = Config.ComboMode or "Fastest",
+		Callback = function(v)
+			Config.ComboMode = v
+			Config.ComboOnly = v == "GameCombo"
+			Config.CustomCombo = v == "Custom"
+		end,
+	}, ctx.flag("DG_ComboMode"))
+	disc(apCombo, "Fastest = if the next combo hit is too slow, throw 01 instead.")
+	disc(apCombo, "GameCombo = always the game next Light/Heavy. Custom = order below.")
 
 	-- ════════════════════════════════ Attack ═══════════════════════════════
 	if Attack then
@@ -4215,8 +4495,8 @@ function genv._DGAP.buildUI(ctx)
 		atL:Header({ Name = "Attack Helper" })
 		feature(atL, {
 			Title = "Attack Helper",
-			Flag = "DG_AH",
-			Desc = "Punish their parry/whiff. Light or dodge+DashLight. Not an interrupt on its own.",
+			Flag = "DG_AttackHelper",
+			Desc = "Punish parry / block / whiff. Light or dodge+DashLight.",
 			get = function()
 				return Config.AttackHelper
 			end,
@@ -4224,105 +4504,258 @@ function genv._DGAP.buildUI(ctx)
 				Config.AttackHelper = v
 			end,
 		})
-		boolToggle(atL, "Perfect Dodge Counter", "DG_PDC", function()
+		enable(atL, "DG_PerfectDodgeCounter", function()
 			return Config.PerfectDodgeCounter
 		end, function(v)
 			Config.PerfectDodgeCounter = v
-		end, "DashLight after a defensive dodge on the same swing.")
-		boolToggle(atL, "Jump Attack Counter", "DG_JAC", function()
+		end, "Hit after their dodge iframe dies.")
+		enable(atL, "DG_AHPunishBlock", function()
+			return Config.AHPunishBlock
+		end, function(v)
+			Config.AHPunishBlock = v
+		end, "Light (or DashLight) when they hold block past the parry window.")
+		enable(atL, "DG_AHPunishWhiff", function()
+			return Config.AHPunishWhiff
+		end, function(v)
+			Config.AHPunishWhiff = v
+		end, "Light when they are in recovery after a miss.")
+		enable(atL, "DG_AHJumpChase", function()
+			return Config.AHJumpChase
+		end, function(v)
+			Config.AHJumpChase = v
+		end, "Jump+attack into a forward dodge.")
+		enable(atL, "DG_JumpAttackCounter", function()
 			return Config.JumpAttackCounter
 		end, function(v)
 			Config.JumpAttackCounter = v
-		end, "Jump slam as a counter. Off by default, easy to eat.")
-		boolToggle(atL, "Combo Only", "DG_ComboOnly", function()
-			return Config.ComboOnly
-		end, function(v)
-			Config.ComboOnly = v
-		end, "Never skip to Light01/Heavy01. Throw what the game combo would.")
+		end, "Jump slam as a defensive counter.")
 
 		local atR = Attack:Section({ Side = "Right" })
-		atR:Header({ Name = "Notes" })
-		disc(atR, "Dual-impact weapons always TAP. Hold across two hits is a block on the second.")
-		disc(atR, "Light never interrupts Heavy/Ult. Heavy vs Heavy only if we land first.")
+		atR:Header({ Name = "No Delay" })
+		feature(atR, {
+			Title = "No Delay",
+			Flag = "DG_NoDelay",
+			Desc = "Drops the client ping prediction wait on QueueBasicAttack.",
+			get = function()
+				return Config.NoDelay
+			end,
+			set = function(v)
+				Config.NoDelay = v
+			end,
+		})
+
+		atR:Divider()
+		atR:Header({ Name = "Custom Combo" })
+		enable(atR, "DG_CustomCombo", function()
+			return Config.CustomCombo
+		end, function(v)
+			Config.CustomCombo = v
+			if v then
+				Config.ComboMode = "Custom"
+				Config.ComboOnly = false
+			end
+		end, "Rewrite Light/Heavy order per weapon. 2,3,4,1 instead of 1,2,3,4.")
+		local lightOpts = { "Light01", "Light02", "Light03", "Light04", "DashLight", "none" }
+		local heavyOpts = { "Heavy01", "Heavy02", "Heavy03", "DashHeavy", "none" }
+		local comboWep = weapons[1]
+		local lightSlots, heavySlots = {}, {}
+		local function defaultOrder(kind)
+			if kind == "Light" then
+				return { "Light01", "Light02", "Light03", "Light04" }
+			end
+			return { "Heavy01", "Heavy02", "Heavy03" }
+		end
+		local function ensureMap(w)
+			Config.ComboMap[w] = Config.ComboMap[w] or {}
+			Config.ComboMap[w].Light = Config.ComboMap[w].Light or defaultOrder("Light")
+			Config.ComboMap[w].Heavy = Config.ComboMap[w].Heavy or defaultOrder("Heavy")
+			return Config.ComboMap[w]
+		end
+		local function writeSlot(kind, idx, val)
+			local m = ensureMap(comboWep)
+			local list = {}
+			local src = m[kind]
+			for i = 1, #src do
+				list[i] = src[i]
+			end
+			if val == "none" then
+				table.remove(list, idx)
+			else
+				list[idx] = val
+			end
+			m[kind] = list
+		end
+		local function loadSlots()
+			local m = ensureMap(comboWep)
+			for i, el in lightSlots do
+				local v = m.Light[i] or "none"
+				pcall(function()
+					el:UpdateSelection(v)
+				end)
+			end
+			for i, el in heavySlots do
+				local v = m.Heavy[i] or "none"
+				pcall(function()
+					el:UpdateSelection(v)
+				end)
+			end
+		end
+		atR:Dropdown({
+			Name = "Weapon",
+			Options = weapons,
+			Default = comboWep,
+			Callback = function(v)
+				comboWep = v
+				loadSlots()
+			end,
+		}, ctx.flag("DG_ComboWep"))
+		for i = 1, 4 do
+			lightSlots[i] = atR:Dropdown({
+				Name = "Light " .. tostring(i),
+				Options = lightOpts,
+				Default = defaultOrder("Light")[i] or "none",
+				Callback = function(v)
+					writeSlot("Light", i, v)
+				end,
+			}, ctx.flag("DG_CL" .. i))
+		end
+		for i = 1, 3 do
+			heavySlots[i] = atR:Dropdown({
+				Name = "Heavy " .. tostring(i),
+				Options = heavyOpts,
+				Default = defaultOrder("Heavy")[i] or "none",
+				Callback = function(v)
+					writeSlot("Heavy", i, v)
+				end,
+			}, ctx.flag("DG_CH" .. i))
+		end
+		atR:Button({
+			Name = "Reset Order",
+			Callback = function()
+				Config.ComboMap[comboWep] = {
+					Light = defaultOrder("Light"),
+					Heavy = defaultOrder("Heavy"),
+				}
+				loadSlots()
+				notify("Combo", "reset " .. tostring(comboWep))
+			end,
+		})
 	end
 
 	-- ════════════════════════════════ Movement ═════════════════════════════
 	if Movement then
 		local mvL = Movement:Section({ Side = "Left" })
-		mvL:Header({ Name = "Auto Face" })
+		mvL:Header({ Name = "Speed" })
 		feature(mvL, {
-			Title = "Auto Face",
-			Flag = "DG_AutoFace",
-			Desc = "Turn into the incoming swing so dodge never goes reverse.",
+			Title = "Speed",
+			Flag = "DG_Speed",
+			Desc = "CFrame step along move direction.",
 			get = function()
-				return Config.AutoFace
+				return Config.Speed
 			end,
 			set = function(v)
-				Config.AutoFace = v
+				Config.Speed = v
 			end,
 		})
-		mvL:Dropdown({
-			Name = "Face Mode",
-			Options = { "CFrame", "LookAt" },
-			Default = Config.AutoFaceMode,
-			Callback = function(v)
-				Config.AutoFaceMode = v
-			end,
-		}, ctx.flag("DG_FaceMode"))
 		slider(mvL, {
-			Name = "Face Speed",
-			Flag = "DG_FaceSpd",
-			Default = Config.AutoFaceSpeed,
-			Min = 1,
-			Max = 40,
+			Name = "Speed",
+			Flag = "DG_SpeedValue",
+			Default = Config.SpeedValue,
+			Min = 8,
+			Max = 80,
 			Precision = 1,
 			Callback = function(v)
-				Config.AutoFaceSpeed = v
+				Config.SpeedValue = v
 			end,
 		})
-		slider(mvL, {
-			Name = "Face Cone",
-			Flag = "DG_FaceCone",
-			Default = Config.FaceCone,
-			Min = 10,
-			Max = 90,
-			Precision = 0,
-			Suffix = " deg",
-			Callback = function(v)
-				Config.FaceCone = v
+
+		mvL:Divider()
+		mvL:Header({ Name = "NoClip" })
+		feature(mvL, {
+			Title = "NoClip",
+			Flag = "DG_NoClip",
+			Desc = "Turns off collision on our root and parts.",
+			get = function()
+				return Config.NoClip
+			end,
+			set = function(v)
+				Config.NoClip = v
+			end,
+		})
+
+		mvL:Divider()
+		mvL:Header({ Name = "No Slowdown" })
+		feature(mvL, {
+			Title = "No Slowdown",
+			Flag = "DG_NoSlowdown",
+			Desc = "Keeps WalkSpeed at weapon RunSpeed.",
+			get = function()
+				return Config.NoSlowdown
+			end,
+			set = function(v)
+				Config.NoSlowdown = v
 			end,
 		})
 
 		local mvR = Movement:Section({ Side = "Right" })
+		mvR:Header({ Name = "No Stun" })
+		feature(mvR, {
+			Title = "No Stun",
+			Flag = "DG_NoStun",
+			Desc = "Cancels stagger so you can act through hitstun.",
+			get = function()
+				return Config.NoStun
+			end,
+			set = function(v)
+				Config.NoStun = v
+			end,
+		})
+
+		mvR:Divider()
+		mvR:Header({ Name = "God Mode" })
+		feature(mvR, {
+			Title = "God Mode",
+			Flag = "DG_GodMode",
+			Desc = "Forces dodge iframe. ResolveImpact GetHit becomes Dodge.",
+			get = function()
+				return Config.GodMode
+			end,
+			set = function(v)
+				Config.GodMode = v
+			end,
+		})
+
+		mvR:Divider()
 		mvR:Header({ Name = "Dodge" })
 		slider(mvR, {
 			Name = "Dodge Speed",
-			Flag = "DG_DodgeSpd",
+			Flag = "DG_DodgeSpeed",
 			Default = Config.DodgeSpeed,
 			Min = 0.5,
-			Max = 2,
+			Max = 3,
 			Precision = 2,
-			Desc = "Client slide velocity mul. 1 = vanilla.",
+			Desc = "Rewrites Dodge MovementProperties.velocity every frame. 1 = vanilla.",
 			Callback = function(v)
 				Config.DodgeSpeed = v
 			end,
 		})
 		slider(mvR, {
 			Name = "Dodge Range",
-			Flag = "DG_DodgeRng",
+			Flag = "DG_DodgeRange",
 			Default = Config.DodgeRange,
 			Min = 0.5,
-			Max = 2,
+			Max = 3,
 			Precision = 2,
+			Desc = "DodgeDistance mul. Applied on the live Dodge action.",
 			Callback = function(v)
 				Config.DodgeRange = v
 			end,
 		})
 		slider(mvR, {
 			Name = "Dodge Cooldown",
-			Flag = "DG_DodgeCd",
+			Flag = "DG_DodgeCooldown",
 			Default = Config.DodgeCooldown,
-			Min = 0.1,
+			Min = 0.05,
 			Max = 1.5,
 			Precision = 2,
 			Suffix = "s",
@@ -4335,11 +4768,11 @@ function genv._DGAP.buildUI(ctx)
 	-- ════════════════════════════════ Visuals ══════════════════════════════
 	if Visuals then
 		local vsL = Visuals:Section({ Side = "Left" })
-		vsL:Header({ Name = "ESP" })
+		vsL:Header({ Name = "Target ESP" })
 		feature(vsL, {
-			Title = "Visuals",
+			Title = "Target ESP",
 			Flag = "DG_Visuals",
-			Desc = "ESP on the two nearest. Hit ring still follows Hit FX.",
+			Desc = "Draws on the two nearest enemies.",
 			get = function()
 				return Config.Visuals
 			end,
@@ -4348,7 +4781,7 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		})
 		vsL:Dropdown({
-			Name = "ESP Style",
+			Name = "Style",
 			Options = ESP_STYLES,
 			Default = Config.EspStyle,
 			Callback = function(v)
@@ -4357,39 +4790,72 @@ function genv._DGAP.buildUI(ctx)
 				end
 			end,
 		}, ctx.flag("DG_EspStyle"))
-		bind(vsL, {
-			Name = "Keybind",
-			Flag = "DG_EspCycle_KB",
-			OnBinded = function(k)
-				Config.EspCycleKey = k
-			end,
-			Toggle = function()
-				local i = styleIndex() % #ESP_STYLES + 1
-				Config.EspStyle = ESP_STYLES[i]
-				notify("ESP", Config.EspStyle)
+		slider(vsL, {
+			Name = "Speed",
+			Flag = "DG_EspSpeed",
+			Default = Config.EspSpeed,
+			Min = 0.1,
+			Max = 4,
+			Precision = 2,
+			Callback = function(v)
+				Config.EspSpeed = v
 			end,
 		})
-		disc(vsL, "PC: 1 Soul / 2 Skeleton / 3 Rift / 4 Weave.")
+		slider(vsL, {
+			Name = "Thickness",
+			Flag = "DG_EspThick",
+			Default = Config.EspThick,
+			Min = 1,
+			Max = 6,
+			Precision = 1,
+			Callback = function(v)
+				Config.EspThick = v
+			end,
+		})
+		vsL:Colorpicker({
+			Name = "Color A",
+			Default = Config.EspColorA,
+			Callback = function(c)
+				if typeof(c) == "Color3" then
+					Config.EspColorA = c
+				end
+			end,
+		}, ctx.flag("DG_EspColorA"))
+		vsL:Colorpicker({
+			Name = "Color B",
+			Default = Config.EspColorB,
+			Callback = function(c)
+				if typeof(c) == "Color3" then
+					Config.EspColorB = c
+				end
+			end,
+		}, ctx.flag("DG_EspColorB"))
 
 		vsL:Divider()
 		vsL:Header({ Name = "Hitbox" })
-		boolToggle(vsL, "Hitbox", "DG_Hitbox", function()
-			return Config.Hitbox
-		end, function(v)
-			Config.Hitbox = v
-		end, "Draw their live attack box.")
+		feature(vsL, {
+			Title = "Hitbox",
+			Flag = "DG_Hitbox",
+			Desc = "Live attack box on the current threat.",
+			get = function()
+				return Config.Hitbox
+			end,
+			set = function(v)
+				Config.Hitbox = v
+			end,
+		})
 		vsL:Dropdown({
-			Name = "Hitbox Physics",
-			Options = { "UseAnother", "AddAnother", "Floor" },
+			Name = "Physics",
+			Options = { "UseAnother", "AddAnother", "Floor", "Scatter" },
 			Default = Config.HitboxPhysics,
 			Callback = function(v)
 				Config.HitboxPhysics = v
 			end,
-		}, ctx.flag("DG_HbPhys"))
-		disc(vsL, "UseAnother = one floor ghost, no reuse of live floor bits.")
+		}, ctx.flag("DG_HitboxPhysics"))
+		disc(vsL, "Scatter = shards fly in air. Floor/UseAnother = drop onto the ground.")
 		slider(vsL, {
 			Name = "Anim Speed",
-			Flag = "DG_HbAnim",
+			Flag = "DG_HitboxAnimSpeed",
 			Default = Config.HitboxAnimSpeed,
 			Min = 0.2,
 			Max = 2,
@@ -4400,7 +4866,7 @@ function genv._DGAP.buildUI(ctx)
 		})
 		slider(vsL, {
 			Name = "Fall Speed",
-			Flag = "DG_HbFall",
+			Flag = "DG_HitboxFallSpeed",
 			Default = Config.HitboxFallSpeed,
 			Min = 0.1,
 			Max = 1.5,
@@ -4410,13 +4876,31 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitboxFallSpeed = v
 			end,
 		})
+		vsL:Colorpicker({
+			Name = "Gradient A",
+			Default = Config.HitboxColorA,
+			Callback = function(c)
+				if typeof(c) == "Color3" then
+					Config.HitboxColorA = c
+				end
+			end,
+		}, ctx.flag("DG_HitboxColorA"))
+		vsL:Colorpicker({
+			Name = "Gradient B",
+			Default = Config.HitboxColorB,
+			Callback = function(c)
+				if typeof(c) == "Color3" then
+					Config.HitboxColorB = c
+				end
+			end,
+		}, ctx.flag("DG_HitboxColorB"))
 
 		local vsR = Visuals:Section({ Side = "Right" })
 		vsR:Header({ Name = "Custom Model" })
 		feature(vsR, {
 			Title = "Custom Model",
 			Flag = "DG_CustomModel",
-			Desc = "Glass body + pink outline. Clothes get stripped so Glass shows. Weapon is not touched.",
+			Desc = "Glass body + outline. Clothes stripped. Weapon not touched.",
 			get = function()
 				return Config.CustomModel
 			end,
@@ -4435,6 +4919,18 @@ function genv._DGAP.buildUI(ctx)
 				Config.CustomModelMaterial = v
 			end,
 		}, ctx.flag("DG_CMMat"))
+		slider(vsR, {
+			Name = "Transparency",
+			Flag = "DG_CustomModelTransparency",
+			Default = Config.CustomModelTransparency,
+			Min = 0,
+			Max = 0.9,
+			Precision = 2,
+			Desc = "0 = solid glass. Higher = more see-through.",
+			Callback = function(v)
+				Config.CustomModelTransparency = v
+			end,
+		})
 		vsR:Colorpicker({
 			Name = "Glass Color",
 			Default = Config.CustomModelColor,
@@ -4455,28 +4951,105 @@ function genv._DGAP.buildUI(ctx)
 		}, ctx.flag("DG_CMOut"))
 
 		vsR:Divider()
-		vsR:Header({ Name = "Hit FX" })
-		boolToggle(vsR, "Hit Ring", "DG_HitFX", function()
-			return Config.HitParticles
-		end, function(v)
-			Config.HitParticles = v
-		end, "One floor ring on a confirmed hit. Not particles.")
-		boolToggle(vsR, "Hit Sound", "DG_HitSnd", function()
-			return Config.HitSound
-		end, function(v)
-			Config.HitSound = v
-		end)
-		vsR:Dropdown({
-			Name = "Hit Sound",
+		vsR:Header({ Name = "Hit Ring" })
+		feature(vsR, {
+			Title = "Hit Ring",
+			Flag = "DG_HitRing",
+			Desc = "One floor ring on a confirmed hit.",
+			get = function()
+				return Config.HitRing
+			end,
+			set = function(v)
+				Config.HitRing = v
+			end,
+		})
+		slider(vsR, {
+			Name = "Life",
+			Flag = "DG_HitRingLife",
+			Default = Config.HitRingLife,
+			Min = 0.4,
+			Max = 4,
+			Precision = 2,
+			Suffix = "s",
+			Callback = function(v)
+				Config.HitRingLife = v
+			end,
+		})
+		slider(vsR, {
+			Name = "Start Radius",
+			Flag = "DG_HitRingR0",
+			Default = Config.HitRingR0,
+			Min = 0.1,
+			Max = 3,
+			Precision = 2,
+			Callback = function(v)
+				Config.HitRingR0 = v
+			end,
+		})
+		slider(vsR, {
+			Name = "End Radius",
+			Flag = "DG_HitRingR1",
+			Default = Config.HitRingR1,
+			Min = 1,
+			Max = 12,
+			Precision = 2,
+			Callback = function(v)
+				Config.HitRingR1 = v
+			end,
+		})
+		slider(vsR, {
+			Name = "Thickness",
+			Flag = "DG_HitRingThick",
+			Default = Config.HitRingThick,
+			Min = 1,
+			Max = 8,
+			Precision = 1,
+			Callback = function(v)
+				Config.HitRingThick = v
+			end,
+		})
+		vsR:Colorpicker({
+			Name = "Ring A",
+			Default = Config.HitRingColorA,
+			Callback = function(c)
+				if typeof(c) == "Color3" then
+					Config.HitRingColorA = c
+				end
+			end,
+		}, ctx.flag("DG_HitRingColorA"))
+		vsR:Colorpicker({
+			Name = "Ring B",
+			Default = Config.HitRingColorB,
+			Callback = function(c)
+				if typeof(c) == "Color3" then
+					Config.HitRingColorB = c
+				end
+			end,
+		}, ctx.flag("DG_HitRingColorB"))
+
+		local vsS = Visuals:Section({ Side = "Right" })
+		vsS:Header({ Name = "Hit Sound" })
+		feature(vsS, {
+			Title = "Hit Sound",
+			Flag = "DG_HitSound",
+			get = function()
+				return Config.HitSound
+			end,
+			set = function(v)
+				Config.HitSound = v
+			end,
+		})
+		vsS:Dropdown({
+			Name = "Preset",
 			Options = { "Fatality", "Click", "Bell", "Neverlose", "SuccessFX" },
 			Default = Config.HitSoundPreset,
 			Callback = function(v)
 				Config.HitSoundPreset = v
 			end,
-		}, ctx.flag("DG_HitSndPre"))
-		slider(vsR, {
-			Name = "Hit Volume",
-			Flag = "DG_HitVol",
+		}, ctx.flag("DG_HitSoundPreset"))
+		slider(vsS, {
+			Name = "Volume",
+			Flag = "DG_HitSoundVolume",
 			Default = Config.HitSoundVolume,
 			Min = 0,
 			Max = 10,
@@ -4485,22 +5058,36 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitSoundVolume = v
 			end,
 		})
-		boolToggle(vsR, "Parry Sound", "DG_ParrySnd", function()
-			return Config.ParrySound
-		end, function(v)
-			Config.ParrySound = v
-		end)
-		vsR:Dropdown({
-			Name = "Parry Sound",
+		vsS:Button({
+			Name = "Preview",
+			Callback = function()
+				playIdSound(HIT_SOUNDS[Config.HitSoundPreset] or 115982072912004, Config.HitSoundVolume)
+			end,
+		})
+
+		vsS:Divider()
+		vsS:Header({ Name = "Parry Sound" })
+		feature(vsS, {
+			Title = "Parry Sound",
+			Flag = "DG_ParrySound",
+			get = function()
+				return Config.ParrySound
+			end,
+			set = function(v)
+				Config.ParrySound = v
+			end,
+		})
+		vsS:Dropdown({
+			Name = "Preset",
 			Options = { "Fatality", "Click", "Bell", "Neverlose", "SuccessFX" },
 			Default = Config.ParrySoundPreset,
 			Callback = function(v)
 				Config.ParrySoundPreset = v
 			end,
-		}, ctx.flag("DG_ParrySndPre"))
-		slider(vsR, {
-			Name = "Parry Volume",
-			Flag = "DG_ParryVol",
+		}, ctx.flag("DG_ParrySoundPreset"))
+		slider(vsS, {
+			Name = "Volume",
+			Flag = "DG_ParrySoundVolume",
 			Default = Config.ParrySoundVolume,
 			Min = 0,
 			Max = 10,
@@ -4509,109 +5096,85 @@ function genv._DGAP.buildUI(ctx)
 				Config.ParrySoundVolume = v
 			end,
 		})
+		vsS:Button({
+			Name = "Preview",
+			Callback = function()
+				playIdSound(HIT_SOUNDS[Config.ParrySoundPreset] or 18448089848, Config.ParrySoundVolume)
+			end,
+		})
 	end
 
 	-- ════════════════════════════════ Misc ═════════════════════════════════
 	if Misc then
 		local msL = Misc:Section({ Side = "Left" })
 		msL:Header({ Name = "Skin Changer" })
-		disc(msL, "Writes CurrentCosmetic on the equipped weapon. Client-only.")
-		local skinBox = msL:Input({
-			Name = "Skin Name",
-			Default = Config.Skin or "",
-			Placeholder = "cosmetic name",
-			Callback = function(t)
-				if type(t) == "string" then
-					Config.Skin = t
-				end
-			end,
-		}, ctx.flag("DG_SkinName"))
-		msL:Button({
-			Name = "Apply Skin",
-			Callback = function()
-				local name = Config.Skin
-				if skinBox and skinBox.GetText then
-					local t = skinBox:GetText()
-					if type(t) == "string" and t ~= "" then
-						name = t
+		disc(msL, "Per-weapon cosmetic. Default = stock. Reset writes Default and refreshes UI.")
+		local skinEls = {}
+		for _, wname in weapons do
+			local pack = catalog[wname]
+			local opts = { "Default" }
+			if pack and pack.cosmetics then
+				for _, n in pack.cosmetics do
+					if n ~= "Default" then
+						opts[#opts + 1] = n
 					end
 				end
-				if applySkin(name) then
-					notify("Skin", name)
-				else
-					notify("Skin", "failed")
+			end
+			local cur = Config.WeaponSkins[wname] or "Default"
+			skinEls[wname] = msL:Dropdown({
+				Name = wname,
+				Options = opts,
+				Default = cur,
+				Callback = function(v)
+					Config.WeaponSkins[wname] = v
+					local lh = localHandler()
+					if lh and tostring(lh.EquippedWeapon) == wname then
+						applySkin(v)
+					end
+				end,
+			}, ctx.flag("DG_Skin_" .. wname))
+		end
+		msL:Button({
+			Name = "Reset",
+			Callback = function()
+				for _, wname in weapons do
+					Config.WeaponSkins[wname] = "Default"
+					local el = skinEls[wname]
+					if el then
+						pcall(function()
+							el:UpdateSelection("Default")
+						end)
+					end
 				end
-			end,
-		})
-		msL:Button({
-			Name = "Cycle Skin",
-			Callback = function()
-				cycleSkin()
-				notify("Skin", Config.Skin ~= "" and Config.Skin or "none")
-			end,
-		})
-		bind(msL, {
-			Name = "Keybind",
-			Flag = "DG_Skin_KB",
-			OnBinded = function(k)
-				Config.SkinKey = k
-			end,
-			Toggle = function()
-				cycleSkin()
-				notify("Skin", Config.Skin ~= "" and Config.Skin or "none")
-			end,
-		})
-		msL:Button({
-			Name = "Refresh List",
-			Callback = function()
-				local names = cosmeticNames(weaponHandler(localHandler()))
-				notify("Skins", #names > 0 and table.concat(names, ", ") or "none on this weapon")
+				applySkin("Default")
+				notify("Skin", "reset")
 			end,
 		})
 
 		local msR = Misc:Section({ Side = "Right" })
-		msR:Header({ Name = "Extra" })
-		boolToggle(msR, "God Mode", "DG_God", function()
-			return Config.GodMode
-		end, function(v)
-			Config.GodMode = v
-		end, "ResolveImpact GetHit -> Dodge. Test iframe, not legit.")
-		boolToggle(msR, "Staff Detect", "DG_Staff", function()
+		msR:Header({ Name = "Staff Detect" })
+		enable(msR, "DG_StaffDetect", function()
 			return Config.StaffDetect
 		end, function(v)
 			Config.StaffDetect = v
-		end, "Kick if a third player joins a 1v1 (staff places).")
-		boolToggle(msR, "Debug Log", "DG_Debug", function()
-			return Config.Debug
-		end, function(v)
-			Config.Debug = v
-		end, "Writes AP_debug_*.txt dumps.")
-		bind(msR, {
-			Name = "Keybind",
-			Flag = "DG_Dump_KB",
-			OnBinded = function(k)
-				Config.DumpKey = k
-			end,
-			Toggle = function()
-				dumpDebug()
-				notify("Dump", "written")
-			end,
-		})
-		disc(msR, "Dump keybind writes the combat log.")
+		end, "Kick if a third player joins a 1v1.")
 	end
 
 	-- ════════════════════════════════ Debug ════════════════════════════════
 	if Debug then
 		local dbgS = Debug:Section({ Side = "Left" })
-		dbgS:Header({ Name = "Dueling Grounds" })
+		dbgS:Header({ Name = "Log" })
 		dbgS:Button({
-			Name = "Dump Combat Log",
+			Name = "Dump",
 			Callback = function()
 				dumpDebug()
 				notify("Dump", "written")
 			end,
 		})
-		dbgS:Button({
+
+		local dbgU = Debug:Section({ Side = "Right" })
+		dbgU:Header({ Name = "Unload" })
+		dbgU:Button({
 			Name = "Unload Combat",
 			Callback = function()
 				pcall(unload)
@@ -4630,7 +5193,7 @@ do
 		end
 	end
 	print("[DG-AP] loaded weapons=" .. nW .. " attacks=" .. nA)
-	print("[DG-AP] loader module  1-4=esp  style=" .. Config.EspStyle)
+	print("[DG-AP] loader module style=" .. Config.EspStyle)
 end
 
 return genv._DGAP
