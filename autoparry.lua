@@ -56,7 +56,7 @@ local Config = {
 	MinRemaining = -0.02,
 	Visuals = true,
 	Hitbox = true,
-	HitboxPhysics = "AddAnother",
+	HitboxPhysics = "Floor",
 	HitboxAnimSpeed = 0.7,
 	HitboxFallSpeed = 0.45,
 	HitboxColorA = Color3.fromRGB(70, 230, 255),
@@ -2931,13 +2931,7 @@ local function tryAttackHelper(lh, threat)
 	if not Config.AttackHelper or not lh or weStunned(lh) or pressed.kind then
 		return false
 	end
-	if dbg._repeat("ah") then
-		return false
-	end
 	local now = os.clock()
-	if dodgeHold.ahAt and now < dodgeHold.ahAt then
-		return true
-	end
 	if threat then
 		local an = tostring(threat.attack or "")
 		if an == "JumpAttack" or an == "Ultimate" or string.find(an, "Ultimate", 1, true) then
@@ -2947,12 +2941,10 @@ local function tryAttackHelper(lh, threat)
 			return false
 		end
 	end
-	if os.clock() - lastAH < (Config.AHCooldown or 0.18) then
-		return false
-	end
 	if not canStartInterrupt(lh) or not lh.Root then
 		return false
 	end
+	local ahBusy = os.clock() - lastAH < (Config.AHCooldown or 0.18)
 	local pad = pingPad()
 	now = os.clock()
 	local ourW = equippedName(lh.OriginalModel)
@@ -2984,13 +2976,29 @@ local function tryAttackHelper(lh, threat)
 	end
 
 	local function fire(name, tag, model, root, remain, predPos, fromPos, skipDelay)
-		if not attackHits(lh, name, root, model, predPos, fromPos) then
+		local hits = attackHits(lh, name, root, model, predPos, fromPos)
+		if not hits then
+			if tag ~= "BLOCKPUNISH" then
+				return false
+			end
+			local d = dist2d(lh.Root.Position, root.Position)
+			if d > ourReach(lh, name) + 1.4 then
+				return false
+			end
+		end
+		if tag == "BLOCKPUNISH" then
+			dodgeHold.ahAt = nil
+			dodgeHold.ahPend = nil
+		elseif dodgeHold.ahAt and now < dodgeHold.ahAt and not skipDelay then
 			return false
 		end
-		if (Config.AHChance or 1) < 0.999 and rng:NextNumber() > Config.AHChance then
+		if tag ~= "BLOCKPUNISH" and dbg._repeat("ah") then
 			return false
 		end
-		if not skipDelay then
+		if tag ~= "BLOCKPUNISH" and (Config.AHChance or 1) < 0.999 and rng:NextNumber() > Config.AHChance then
+			return false
+		end
+		if not skipDelay and tag ~= "BLOCKPUNISH" then
 			local delay = dbg._hd(0.22, 0.06)
 			if delay > 0.01 then
 				dodgeHold.ahAt = now + delay
@@ -3088,14 +3096,14 @@ local function tryAttackHelper(lh, threat)
 								end
 								end
 								end
-								if (jumping or swinging or (threat and threat.will and threat.model == model and not threat.windup)) and not dodgeAge then
-								continue
+								if (jumping or swinging or (threat and threat.will and threat.model == model and not threat.windup)) and not dodgeAge and not blockingAnim then
+									continue
 								end
 				local lockK = tostring(model)
 				if not dodgeAge then
 					ahDodgeLock[lockK] = nil
 				end
-				if Config.PerfectDodgeCounter and dodgeAge then
+				if not ahBusy and Config.PerfectDodgeCounter and dodgeAge then
 					local iframeLeft = DODGE_IFRAME - dodgeAge
 					local d = dist2d(lh.Root.Position, root.Position)
 					local standName = comboAttackName(lh, "Light")
@@ -3267,11 +3275,13 @@ local function tryAttackHelper(lh, threat)
 				if Config.AHPunishBlock and blocking and not blockPunished[model] then
 					local replicaAge = blockAge or 0
 					local standL = nextL
-					local hitL = attackHits(lh, standL, root, model)
-					local delay = replicaAge > 0.12 and 0.02 or (Config.AHBlockHold or 0.05)
+					local hitL = attackHits(lh, standL, root, model) or d <= ourReach(lh, standL) + 1.4
+					local ourHit = hitT(standL)
+					local parryLeft = math.max(0, 0.233 - replicaAge)
+					local delay = math.max(0, parryLeft - ourHit + 0.02)
 					if holdT >= delay then
-						blockPunished[model] = true
-						if hitL and fire(standL, "BLOCKPUNISH", model, root, 0) then
+						if hitL and fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
+							blockPunished[model] = true
 							return true
 						end
 						if not hitL then
@@ -3286,6 +3296,7 @@ local function tryAttackHelper(lh, threat)
 									pressed.from = "ah"
 									pressed.rec = rec
 									dbg.helper += 1
+									blockPunished[model] = true
 									clog("AH_BLOCKDASH", string.format("gap dodge+%s hold=%.3f age=%.3f d=%.2f recede=%s", rec.name, holdT, replicaAge, d, tostring(recede)), {
 										weapon = equippedName(model),
 										attack = "BLOCKDASH",
@@ -4478,8 +4489,8 @@ bind(RunService.RenderStepped, function(dt)
 		local st = stateFor(c.model)
 		local spd = math.max(0.2, Config.HitboxAnimSpeed or 0.7)
 		local phys = Config.HitboxPhysics
-		local useAnother = phys == "AddAnother"
-		local floorPhys = phys == "AddAnother"
+		local useAnother = phys == "Floor" or phys == "AddAnother" or phys == "UseAnother"
+		local floorPhys = useAnother
 		local inT = 0.38 / spd
 		local outT = floorPhys and math.max(0.12, Config.HitboxFallSpeed or 0.45) or (0.28 / spd)
 		local live = Config.Hitbox and threat and threat.will and threat.model == c.model and threat.boxCF
@@ -5007,17 +5018,25 @@ function genv._DGAP.buildUI(ctx)
 			end
 		end,
 	})
-	els.DG_Preset = apBase:Dropdown({
-		Name = "Preset",
-		Options = { "Blatant", "SemiLegit", "Legit" },
-		Default = Config.Preset or "Blatant",
-		Callback = function(v)
-			if not presetGuard then
-				applyPreset(v)
-			end
+	apBase:Button({
+		Name = "Blatant",
+		Callback = function()
+			applyPreset("Blatant")
 		end,
-	}, ctx.flag("DG_Preset"))
-	disc(apBase, "Blatant = always. SemiLegit = mixed. Legit = human rolls.")
+	})
+	apBase:Button({
+		Name = "SemiLegit",
+		Callback = function()
+			applyPreset("SemiLegit")
+		end,
+	})
+	apBase:Button({
+		Name = "Legit",
+		Callback = function()
+			applyPreset("Legit")
+		end,
+	})
+	disc(apBase, "Buttons only. Config load does not apply a preset.")
 
 	apBase:Divider()
 	apBase:Header({ Name = "Priority" })
@@ -5365,22 +5384,31 @@ function genv._DGAP.buildUI(ctx)
 			SemiLegit = { AHChance = 0.78, AHCooldown = 0.24, AHBlockHold = 0.08, AHPunishWhiff = false, AHJumpChase = false },
 			Legit = { AHChance = 0.4, AHCooldown = 0.34, AHBlockHold = 0.12, AHPunishWhiff = false, AHJumpChase = false },
 		}
-		atL:Dropdown({
-			Name = "AH Preset",
-			Options = { "SemiLegit", "Legit" },
-			Default = Config.AHPreset or "SemiLegit",
-			Callback = function(v)
-				Config.AHPreset = v
-				local p = AH_PRESETS[v]
-				if p then
-					for k, val in p do
-						Config[k] = val
-						pushEl("DG_" .. k, val)
-					end
+		atL:Button({
+			Name = "AH SemiLegit",
+			Callback = function()
+				Config.AHPreset = "SemiLegit"
+				local p = AH_PRESETS.SemiLegit
+				for k, val in p do
+					Config[k] = val
+					pushEl("DG_" .. k, val)
 				end
+				notify("AH", "SemiLegit")
 			end,
-		}, ctx.flag("DG_AHPreset"))
-		disc(atL, "Semi = current helper, slower. Legit = less often, more delay.")
+		})
+		atL:Button({
+			Name = "AH Legit",
+			Callback = function()
+				Config.AHPreset = "Legit"
+				local p = AH_PRESETS.Legit
+				for k, val in p do
+					Config[k] = val
+					pushEl("DG_" .. k, val)
+				end
+				notify("AH", "Legit")
+			end,
+		})
+		disc(atL, "Buttons only. Does not overwrite on config load.")
 		boolToggle(atL, "Perfect Dodge Counter", "DG_PerfectDodgeCounter", function()
 			return Config.PerfectDodgeCounter
 		end, function(v)
@@ -5747,13 +5775,16 @@ function genv._DGAP.buildUI(ctx)
 		})
 		vsHit:Dropdown({
 			Name = "Physics",
-			Options = { "AddAnother", "Scatter" },
-			Default = Config.HitboxPhysics,
+			Options = { "Floor", "Scatter" },
+			Default = (Config.HitboxPhysics == "AddAnother" or Config.HitboxPhysics == "UseAnother") and "Floor" or (Config.HitboxPhysics or "Floor"),
 			Callback = function(v)
+				if v == "AddAnother" or v == "UseAnother" then
+					v = "Floor"
+				end
 				Config.HitboxPhysics = v
 			end,
 		}, ctx.flag("DG_HitboxPhysics"))
-		disc(vsHit, "AddAnother = new box each swing. Scatter = air shards.")
+		disc(vsHit, "Floor = new box each swing, drops. Scatter = air shards.")
 		slider(vsHit, {
 			Name = "Anim Speed",
 			Flag = "DG_HitboxAnimSpeed",
