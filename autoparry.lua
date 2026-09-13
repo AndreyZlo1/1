@@ -1295,13 +1295,13 @@ local function renderHitFX(now)
 			local segs = 48
 			local prev
 			local y = p.pos.Y
-			local col = gradAlong(now * 0.12, Config.HitRingColorA, Config.HitRingColorB)
 			for k = 0, segs do
 				local a = k / segs * 6.283185307179586
 				local wob = 1 + 0.028 * math.sin(a * 2 + t * 1.6)
 				local rr = rad * wob
 				local pt = Vector3.new(p.pos.X + math.cos(a) * rr, y, p.pos.Z + math.sin(a) * rr)
 				if prev then
+					local col = gradAlong(k / segs + now * 0.45, Config.HitRingColorA, Config.HitRingColorB)
 					line3(prev, pt, col, Config.HitRingThick or 3, alpha)
 				end
 				prev = pt
@@ -2178,14 +2178,26 @@ function dodgeHold.queueTick()
 	if not Config.AutoQueue or not running then
 		return
 	end
-	if MatchController and MatchController.ActiveLocalPlayerMatch then
+	local pid = game.PlaceId
+	if pid ~= 100484168444874 and pid ~= 107083982238164 and pid ~= 93870717579227 then
+		return
+	end
+	if LocalPlayer:GetAttribute("InMatch") then
+		return
+	end
+	local st = ReplicatedStorage:GetAttribute("MM_State")
+	if st == "Searching" or st == "MatchFound" or st == "Starting" or st == "WaitingForPlayers" then
+		return
+	end
+	local ds = ReplicatedStorage:GetAttribute("ReservedDuelStatus")
+	if ds == "Active" or ds == "Starting" or ds == "WaitingForPlayers" then
 		return
 	end
 	local now = os.clock()
 	if dodgeHold.qWait and now < dodgeHold.qWait then
 		return
 	end
-	if dodgeHold.qAt and now - dodgeHold.qAt < 5 then
+	if dodgeHold.qAt and now - dodgeHold.qAt < 6 then
 		return
 	end
 	local mm = ReplicatedStorage:FindFirstChild("Remotes")
@@ -2370,14 +2382,26 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 	local heavyRec = Config.BreakHeavy and bestOfKind(lh, threat, "Heavy", true)
 	local lightRec = Config.BreakLight and bestOfKind(lh, threat, "Light", true)
 	local function tryHeavy()
-		if heavyRec and inReach(heavyRec) and canStartInterrupt(lh) then
-			return take("heavy", heavyRec, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
+		if Config.BreakHeavy and canStartInterrupt(lh) then
+			if heavyRec and inReach(heavyRec) then
+				return take("heavy", heavyRec, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
+			end
+			local poke = dodgeHold.pokeRec(lh, threat, "Heavy")
+			if poke then
+				return take("heavy", poke, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
+			end
 		end
 		return nil
 	end
 	local function tryLight()
-		if lightRec and inReach(lightRec) and canStartInterrupt(lh) then
-			return take("light", lightRec, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
+		if Config.BreakLight and canStartInterrupt(lh) then
+			if lightRec and inReach(lightRec) then
+				return take("light", lightRec, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
+			end
+			local poke = dodgeHold.pokeRec(lh, threat, "Light")
+			if poke then
+				return take("light", poke, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
+			end
 		end
 		return nil
 	end
@@ -2546,6 +2570,62 @@ local function attackHits(lh, name, enemyRoot, enemyModel, predPos, fromPos)
 	local fp = fromPos or lh.Root.Position
 	local boxCF = lookAtFlat(fp, ep) * imp.cf
 	return obbHitsSphere(boxCF, imp.size, ep, enemyRadius(enemyModel) * 0.72)
+end
+
+function dodgeHold.pokeRec(lh, threat, wantKind)
+	if not Config.SmartInterrupt or not lh or not lh.Root or not threat or not threat.root then
+		return nil
+	end
+	if threat.windup or threat.attack == "JumpAttack" then
+		return nil
+	end
+	if (threat.impN or 1) > 1 then
+		return nil
+	end
+	local escape = threat.cancelRemain
+	if type(escape) ~= "number" then
+		escape = (threat.remain or 0) + 0.35
+	end
+	local vel = enemyVel(threat.model, threat.root)
+	local flat = Vector3.new(vel.X, 0, vel.Z)
+	if flat.Magnitude > 45 then
+		flat = flat.Unit * 45
+	end
+	local w = equippedName(lh.OriginalModel)
+	local pack = type(w) == "string" and catalog[w]
+	if not pack then
+		return nil
+	end
+	local names
+	if wantKind == "Heavy" then
+		names = { comboAttackName(lh, "Heavy"), "Heavy01", "Heavy02", "Heavy03" }
+	else
+		names = { comboAttackName(lh, "Light"), "Light01", "Light02", "Light03" }
+	end
+	if Config.ComboMode == "GameCombo" then
+		names = { names[1] }
+	end
+	local theirSa = threat.superArmor or 0
+	local remain = threat.remain or 0
+	local seen = {}
+	for _, name in names do
+		if type(name) == "string" and not seen[name] then
+			seen[name] = true
+			local rec = packAttackRec(pack, name)
+			if rec and rec.kind == wantKind and rec.sa >= theirSa and rec.hit < escape then
+				if threat.will and rec.hit > remain then
+					continue
+				end
+				local pred = threat.root.Position + flat * rec.hit
+				if attackHits(lh, rec.name, threat.root, threat.model, pred) then
+					rec.poke = true
+					rec.mode = "interrupt"
+					return rec
+				end
+			end
+		end
+	end
+	return nil
 end
 
 local function queueNamed(lh, rec)
@@ -3333,12 +3413,25 @@ local function styleIndex()
 	return 1
 end
 
-if MatchController and MatchController.MatchEndedForLocalPlayer then
-	bind(MatchController.MatchEndedForLocalPlayer, function()
-		dodgeHold.qWait = os.clock() + 2
+if MatchController and MatchController.MatchFinishedForLocalPlayer then
+	bind(MatchController.MatchFinishedForLocalPlayer, function()
+		dodgeHold.qWait = os.clock() + 1.4
 		dodgeHold.qAt = nil
 	end)
 end
+if MatchController and MatchController.MatchEndedForLocalPlayer then
+	bind(MatchController.MatchEndedForLocalPlayer, function()
+		dodgeHold.qWait = os.clock() + 0.8
+		dodgeHold.qAt = nil
+	end)
+end
+bind(LocalPlayer:GetAttributeChangedSignal("InMatch"), function()
+	if LocalPlayer:GetAttribute("InMatch") then
+		return
+	end
+	dodgeHold.qWait = os.clock() + 1.1
+	dodgeHold.qAt = nil
+end)
 
 bind(RunService.Heartbeat, function(dt)
 	dodgeHold.atmo()
@@ -3931,7 +4024,7 @@ bind(RunService.RenderStepped, function(dt)
 					pressed.untilTime = pressed.pendAt + 0.04
 				else
 					local ok = queueNamed(lh, plan.rec)
-					clog("INTERRUPT_TRY", string.format("ok=%s name=%s ourHit=%.3f their=%.3f ourSa=%.0f theirSa=%.0f kind=%s cur=%s", tostring(ok), plan.rec.name, plan.rec.hit, threat.remain, plan.rec.sa, threat.superArmor or 0, plan.kind, curActName(lh)), threat, lh)
+					clog("INTERRUPT_TRY", string.format("ok=%s name=%s ourHit=%.3f their=%.3f escape=%s poke=%s ourSa=%.0f theirSa=%.0f kind=%s cur=%s", tostring(ok), plan.rec.name, plan.rec.hit, threat.remain, type(threat.cancelRemain) == "number" and string.format("%.3f", threat.cancelRemain) or "-", tostring(plan.rec.poke == true), plan.rec.sa, threat.superArmor or 0, plan.kind, curActName(lh)), threat, lh)
 					if ok then
 						dbg.interrupt += 1
 						dbg._note(plan.kind == "heavy" and "heavy" or "light")
@@ -5879,7 +5972,7 @@ function genv._DGAP.buildUI(ctx)
 				dodgeHold.qWait = os.clock() + 0.4
 				dodgeHold.qAt = nil
 			end
-		end, "Requeues 1v1 or Ranked when a match ends.")
+		end, "After a 1v1/Ranked fight ends, queues again on this server.")
 		msQ:Dropdown({
 			Name = "Mode",
 			Options = { "1v1", "Ranked" },
