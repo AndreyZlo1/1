@@ -196,10 +196,6 @@ do
 		[93870717579227] = true,
 	}
 	local isDuel = duelPlaces[game.PlaceId] == true
-	local gm = require(ReplicatedStorage.GameManager)
-	if gm.Globals and gm.Globals.IS_DUEL_RESERVED_SERVER == true then
-		isDuel = true
-	end
 	local kicked = false
 	local function expectedCap()
 		local m = MatchController and MatchController.ActiveLocalPlayerMatch
@@ -1394,9 +1390,6 @@ local function isEnemyModel(model, localOriginal)
 	if not model or model == localOriginal or model:GetAttribute("IsDead") then
 		return false
 	end
-	if CharacterController:IsLocalCharacterModel(model) then
-		return false
-	end
 	if model:GetAttribute("UserId") == LocalPlayer.UserId then
 		return false
 	end
@@ -1406,7 +1399,7 @@ local function isEnemyModel(model, localOriginal)
 	if not MatchController then
 		return true
 	end
-	return MatchController:IsCharacterEnemyOfLocalPlayer(model) and true or false
+	return MatchController:IsCharacterEnemyOfLocalPlayer(model) == true
 end
 
 local function modelRoot(model)
@@ -2914,7 +2907,7 @@ local function scanThreat(lh)
 							local entry = lookupAttack(weaponName, id)
 							if entry then
 								local tpos = track.TimePosition
-								local wgt = track.WeightCurrent
+								local wgt = track.WeightCurrent or 1
 								if wgt < 0.03 then
 									continue
 								end
@@ -4017,7 +4010,17 @@ bind(RunService.RenderStepped, function(dt)
 end)
 
 local function isLocalModel(model)
-	return CharacterController:IsLocalCharacterModel(model) or model:GetAttribute("UserId") == LocalPlayer.UserId
+	if not model then
+		return false
+	end
+	if model:GetAttribute("UserId") == LocalPlayer.UserId then
+		return true
+	end
+	local lh = CharacterController:GetLocalCharacterHandler()
+	if lh and (model == lh.OriginalModel or model == lh.Model) then
+		return true
+	end
+	return false
 end
 
 local rem = ReplicatedStorage.Remotes.PlayerCharacter.Request.ResolveImpact
@@ -4053,7 +4056,11 @@ if soundFolder then
 end
 
 bind(ReplicatedStorage.Remotes.Combat.Impact.OnClientEvent, function(_, effect, attacker, defender, props)
-	local pos = props.cframe.Position
+	local cf = props and props.cframe
+	if not cf then
+		return
+	end
+	local pos = cf.Position
 	if isLocalModel(attacker) and not PARRY_EFFECTS[effect] and effect ~= "Block" and effect ~= "LightBlock" and effect ~= "UltimateBlock" then
 		onLocalConfirmedHit(pos)
 		dlog("HIT_FX", "effect=" .. tostring(effect))
