@@ -1574,6 +1574,7 @@ local lastDodgeAt = 0
 local dodgeHold = { dir = nil }
 local DODGE_IFRAME = 0.3
 local DODGE_CHAIN = 0.26666666666666666
+local pressed
 local enemyMot = {}
 
 local function wrapDodgeCheck(lh)
@@ -2071,6 +2072,51 @@ local function packAttackRec(pack, name)
 	return { name = name, hit = hit, sa = imp.saDmg or 0, kind = attackKind(name), reach = math.abs(imp.cf.Position.Z) + imp.size.Z * 0.5 }
 end
 
+local function ourDashHit(lh)
+	local w = equippedName(lh and lh.OriginalModel)
+	local pack = type(w) == "string" and catalog[w]
+	local rec = packAttackRec(pack, "DashLight")
+	return rec and rec.hit or 0.35
+end
+
+local function dashCoverWait(remain)
+	return math.max(DODGE_CHAIN, remain or 0)
+end
+
+local function dashFollowOk(threat, coverRemain, dashHit)
+	if not threat then
+		return true
+	end
+	if threat.attack == "JumpAttack" then
+		return true
+	end
+	local need = dashCoverWait(coverRemain)
+	local escape = threat.cancelRemain
+	if type(escape) ~= "number" then
+		escape = (threat.remain or 0) + 0.35
+	end
+	return need + (dashHit or 0.35) < escape
+end
+
+local function armDashAtk(lh, threat, from, wantFollow)
+	local now = os.clock()
+	pressed.kind = "dashatk"
+	pressed.key = threat and threat.key or ""
+	pressed.untilTime = now + 0.55
+	pressed.at = now
+	pressed.from = from
+	pressed.enemyRoot = threat and threat.root
+	pressed.enemyModel = threat and threat.model
+	pressed.coverRemain = threat and threat.remain or 0
+	pressed.escapeRemain = threat and threat.cancelRemain
+	pressed.dashHit = ourDashHit(lh)
+	if wantFollow and dashFollowOk(threat, pressed.coverRemain, pressed.dashHit) then
+		pressed.rec = { name = "DashLight", kind = "Light" }
+	else
+		pressed.rec = nil
+	end
+end
+
 local function comboAttackName(lh, wantKind)
 	local am = lh and lh.ActionManager
 	local name
@@ -2438,7 +2484,7 @@ local airJump = {}
 local lastTakenAt = 0
 local lastAH = 0
 local ahDodgeLock = {}
-local pressed = { kind = nil, untilTime = 0, key = "", rec = nil }
+pressed = { kind = nil, untilTime = 0, key = "", rec = nil }
 local parrySigLh = nil
 
 dbg = {
@@ -3415,10 +3461,14 @@ bind(RunService.RenderStepped, function(dt)
 		end
 	elseif pressed.kind == "dashatk" and not pressed.rec then
 		skipFollow = true
-		pressed.kind = nil
-		pressed.from = nil
 	end
-		if not skipFollow and pressed.kind then
+		if skipFollow then
+			if now >= pressed.untilTime then
+				pressed.kind = nil
+				pressed.rec = nil
+				pressed.from = nil
+			end
+		elseif pressed.kind then
 			local ready = canQueueAttack(lh)
 			if pressed.kind == "jumpatk" and ready then
 				local d = 0
@@ -3431,12 +3481,22 @@ bind(RunService.RenderStepped, function(dt)
 				end
 			end
 			if pressed.kind == "dashatk" then
-				local am = lh.ActionManager
-				local cur = am and am.CurrentAction
-				local canChain = cur and cur.CanChainBasicAttack == true
-				local waited = pressed.at and (now - pressed.at) >= DODGE_CHAIN
-				if not (canChain or waited) then
+				local cover = pressed.coverRemain or 0
+				local need = dashCoverWait(cover)
+				local elapsed = pressed.at and (now - pressed.at) or 0
+				local escape = pressed.escapeRemain
+				local dashHit = pressed.dashHit or 0.35
+				local skipEscape = pressed.from == "jump" or pressed.from == "ah"
+				if not skipEscape and type(escape) == "number" and need + dashHit >= escape then
+					clog("DASHATK_SKIP", string.format("escape=%.3f need=%.3f dashHit=%.3f", escape, need, dashHit), threat, lh)
+					pressed.rec = nil
 					ready = false
+				elseif elapsed < need then
+					if cover <= DODGE_CHAIN then
+						ready = canQueueAttack(lh)
+					else
+						ready = false
+					end
 				end
 			end
 			if ready then
@@ -3609,17 +3669,10 @@ bind(RunService.RenderStepped, function(dt)
 				local d = (lh.Root and threat.root) and dist2d(lh.Root.Position, threat.root.Position) or 0
 				local dodged, ddir = dodgeAt(lh, threat.root.Position, d, recede)
 				if dodged then
-					pressed.kind = "dashatk"
-					pressed.key = threat.key
-					pressed.untilTime = now + 0.55
-					pressed.at = now
-					pressed.from = "plan"
-					pressed.rec = { name = "DashLight", kind = "Light" }
-					pressed.enemyRoot = threat.root
-					pressed.enemyModel = threat.model
+					armDashAtk(lh, threat, "plan", true)
 					dbg.dodge += 1 dbg._note("dodge")
 					lastDodgeAt = now
-					clog("DASHATK", string.format("delayed remain=%.3f dir=%s", threat.remain, ddir), threat, lh)
+					clog("DASHATK", string.format("delayed remain=%.3f dir=%s follow=%s escape=%s", threat.remain, ddir, pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
 				else
 					pressed.kind = nil
 				end
@@ -3658,21 +3711,14 @@ bind(RunService.RenderStepped, function(dt)
 			if Config.AutoDodge and not lh.IsDodging then
 				local dodged, ddir = dodgeAt(lh, threat.root.Position, jdist, true)
 				if dodged then
-						pressed.kind = "dashatk"
-						pressed.key = threat.key
-						pressed.untilTime = now + 0.55
-						pressed.at = now
-						pressed.from = "jump"
-						pressed.rec = { name = "DashLight", kind = "Light" }
-						pressed.enemyRoot = threat.root
-						pressed.enemyModel = threat.model
+						armDashAtk(lh, threat, "jump", true)
 						dbg.dodge += 1
 						dbg._note("dodge")
 						lastDodgeAt = now
 						if threat.swing then
 							threat.swing.handled = true
 						end
-						clog("DASHATK", string.format("jump-slam remain=%.3f dist=%.2f dir=%s recede=%s", threat.remain, jdist, ddir, tostring(recede)), threat, lh)
+						clog("DASHATK", string.format("jump-slam remain=%.3f dist=%.2f dir=%s recede=%s follow=%s", threat.remain, jdist, ddir, tostring(recede), pressed.rec and "yes" or "no"), threat, lh)
 						did = true
 					end
 			end
@@ -3861,20 +3907,28 @@ bind(RunService.RenderStepped, function(dt)
 				pressed.key = threat.key
 				pressed.untilTime = pressed.pendAt + 0.04
 			else
-				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
-				local dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, recede)
-				if dodged then
-					pressed.kind = "dashatk"
-					pressed.key = threat.key
-					pressed.untilTime = now + 0.55
-					pressed.at = now
-					pressed.from = "plan"
-					pressed.rec = punished and nil or { name = "DashLight", kind = "Light" }
-					pressed.enemyRoot = threat.root
-					pressed.enemyModel = threat.model
-					dbg.dodge += 1 dbg._note("dodge")
-					lastDodgeAt = now
-					clog("DASHATK", string.format("iframe-cover remain=%.3f last=%.3f dist=%.2f dir=%s recede=%s", threat.remain, threat.lastRemain or threat.remain, jumpDist, ddir, tostring(recede)), threat, lh)
+					local follow = (not punished) and dashFollowOk(threat, threat.remain, ourDashHit(lh))
+					if not follow and Config.AutoParry and combatOn and threat.canParry and threat.remain <= parryLead then
+						if pressGuard(lh) then
+							pressed.kind = "parry"
+							pressed.key = threat.key
+							pressed.swingId = threatSwingId(threat)
+							pressed.tapped = false
+							pressed.untilTime = parryUntil(now, threat, parryDur, jumpAtk)
+							dbg.parry += 1 dbg._note("parry")
+							if threat.swing and (threat.impN or 1) <= 1 then
+								threat.swing.handled = true
+							end
+							clog("PARRY", string.format("dash-unsafe remain=%.3f escape=%s", threat.remain, type(threat.cancelRemain) == "number" and string.format("%.3f", threat.cancelRemain) or "-"), threat, lh)
+						end
+					else
+					local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
+					local dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, recede)
+					if dodged then
+						armDashAtk(lh, threat, "plan", follow)
+						dbg.dodge += 1 dbg._note("dodge")
+						lastDodgeAt = now
+						clog("DASHATK", string.format("iframe-cover remain=%.3f last=%.3f dist=%.2f dir=%s recede=%s follow=%s escape=%s", threat.remain, threat.lastRemain or threat.remain, jumpDist, ddir, tostring(recede), pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
 				elseif Config.AutoParry and combatOn and threat.canParry and threat.remain <= parryDur then
 					if pressGuard(lh) then
 						pressed.kind = "parry"
@@ -3888,6 +3942,7 @@ bind(RunService.RenderStepped, function(dt)
 						end
 						clog("PARRY_FALLBACK", string.format("dodge-fail remain=%.3f last=%.3f cur=%s", threat.remain, threat.lastRemain or threat.remain, curActName(lh)), threat, lh)
 					end
+				end
 				end
 			end
 		elseif (not punished) and rec and rec.mode == "chip" and pressed.kind ~= "chip" and not plan and not threat.canParry then
@@ -3938,24 +3993,17 @@ bind(RunService.RenderStepped, function(dt)
 			local dodgeCover = ((threat.impN or 1) > 1) and (threat.lastRemain or threat.remain) or threat.remain
 			local dodgeDeclined = threat.swing and threat.swing.rolls and threat.swing.rolls.priDodge == false
 			local dualParry = (threat.impN or 1) > 1 and threat.canParry
-			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and lh.ActionManager and lh.ActionManager:CanStartDodge() and dodgeCover <= DODGE_IFRAME and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined
+			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and lh.ActionManager and lh.ActionManager:CanStartDodge() and dodgeCover <= DODGE_IFRAME and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and (dashFollowOk(threat, threat.remain, ourDashHit(lh)) or threat.remain > parryLead)
 			local doDodge = Config.AutoDodge and combatOn and (not threat.windup) and dodgeCover <= DODGE_IFRAME and threat.remain >= 0.018 and (not threat.canParry or threat.remain < 0.04 or not Config.AutoParry or jumpAtk) and canDef and not dodgeDeclined
 			if pressed.kind == "wait" or pressed.kind == "block" then
 			elseif canDodgeNow then
 				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
 				local dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, recede)
 				if dodged then
-					pressed.kind = "dashatk"
-					pressed.key = threat.key
-					pressed.untilTime = now + 0.55
-					pressed.at = now
-					pressed.from = "plan"
-					pressed.rec = { name = "DashLight", kind = "Light" }
-					pressed.enemyRoot = threat.root
-					pressed.enemyModel = threat.model
+					armDashAtk(lh, threat, "plan", true)
 					dbg.dodge += 1 dbg._note("dodge")
 					lastDodgeAt = now
-					clog("DASHATK", string.format("prefer remain=%.3f last=%.3f dist=%.2f dir=%s recede=%s", threat.remain, threat.lastRemain or threat.remain, jumpDist, ddir, tostring(recede)), threat, lh)
+					clog("DASHATK", string.format("prefer remain=%.3f last=%.3f dist=%.2f dir=%s recede=%s follow=%s escape=%s", threat.remain, threat.lastRemain or threat.remain, jumpDist, ddir, tostring(recede), pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
 				elseif doParry then
 					if rollSticky(threat.swing, "parry", Config.ParryChance) then
 						if pressGuard(lh) then
@@ -4009,16 +4057,9 @@ bind(RunService.RenderStepped, function(dt)
 						local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
 						local dodged, ddir = dodgeAt(lh, threat.root.Position, jumpDist, recede)
 						if dodged then
-							pressed.kind = "dashatk"
-							pressed.key = threat.key
-							pressed.untilTime = now + 0.55
-							pressed.at = now
-							pressed.from = "parry-skip"
-							pressed.rec = { name = "DashLight", kind = "Light" }
-							pressed.enemyRoot = threat.root
-							pressed.enemyModel = threat.model
+							armDashAtk(lh, threat, "parry-skip", true)
 							dbg.dodge += 1 dbg._note("dodge")
-							clog("DASHATK", string.format("parry-skip remain=%.3f dir=%s", threat.remain, ddir), threat, lh)
+							clog("DASHATK", string.format("parry-skip remain=%.3f dir=%s follow=%s escape=%s", threat.remain, ddir, pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
 						end
 					else
 						dbg.skip += 1
