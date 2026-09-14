@@ -1580,6 +1580,15 @@ end
 
 local lastDodgeAt = 0
 local dodgeHold = { dir = nil }
+function dodgeHold.asC(fn)
+	if typeof(newcclosure) == "function" then
+		fn = newcclosure(fn)
+	end
+	if typeof(setstackhidden) == "function" then
+		setstackhidden(fn, true)
+	end
+	return fn
+end
 local DODGE_IFRAME = 0.3
 local DODGE_CHAIN = 0.26666666666666666
 local pressed
@@ -1592,13 +1601,13 @@ local function wrapDodgeCheck(lh)
 	end
 	am._dgapDodgeWrap = true
 	local oldDodge = am._checkForDodgeActionChanges
-	am._checkForDodgeActionChanges = function(self, moveDir)
+	am._checkForDodgeActionChanges = dodgeHold.asC(function(self, moveDir)
 		local hold = dodgeHold.dir
 		if typeof(hold) == "Vector3" and hold.Magnitude > 0.1 then
 			moveDir = hold
 		end
 		return oldDodge(self, moveDir)
-	end
+	end)
 end
 
 local function enemyVel(model, root)
@@ -2108,12 +2117,38 @@ function dodgeHold.cdOk()
 end
 
 function dodgeHold.parryAt(blockAge, ourHit)
-	local left = math.max(0, 0.233 - (blockAge or 0))
 	local t = ourHit or 0
+	local left = math.max(0, 0.233 - (blockAge or 0))
 	if t <= left + 0.02 then
 		return true
 	end
-	if t <= left + 0.233 + 0.02 then
+	return t > left
+end
+
+function dodgeHold.theirRange(lh, threat)
+	if not threat or not lh or not lh.Root then
+		return false
+	end
+	if threat.will then
+		return true
+	end
+	if threat.boxCF and threat.size then
+		return obbHitsSphere(threat.boxCF, threat.size, lh.Root.Position, 3.9)
+	end
+	return false
+end
+
+function dodgeHold.unsafeSwing(lh, threat, rec)
+	if not rec or not threat then
+		return true
+	end
+	local ourHit = rec.hit or 0
+	local theirHit = threat.remain or 0
+	local esc = threat.cancelRemain
+	if type(esc) == "number" and ourHit > esc + 0.02 then
+		return true
+	end
+	if dodgeHold.theirRange(lh, threat) and ourHit + 0.08 >= theirHit then
 		return true
 	end
 	return false
@@ -2348,6 +2383,9 @@ local function bestOfKind(lh, threat, wantKind, needBreak)
 	if wantKind == "Heavy" and (isUlt or string.find(atkName, "Heavy", 1, true)) then
 		slack = -0.05
 	end
+	if threat.will then
+		slack = slack - 0.08
+	end
 	local function fits(name)
 		if type(name) ~= "string" or name == "none" then
 			return nil
@@ -2360,6 +2398,9 @@ local function bestOfKind(lh, threat, wantKind, needBreak)
 			return nil
 		end
 		if rec.hit + pad > (threat.remain or 0) + slack then
+			return nil
+		end
+		if type(threat.cancelRemain) == "number" and rec.hit > threat.cancelRemain + 0.02 then
 			return nil
 		end
 		local theirSa = threat.superArmor or 0
@@ -2487,27 +2528,31 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 	local lightRec = Config.BreakLight and bestOfKind(lh, threat, "Light", true)
 	local function tryHeavy()
 		if Config.BreakHeavy and canStartInterrupt(lh) then
-			if heavyRec and inReach(heavyRec) then
+			if heavyRec and inReach(heavyRec) and not dodgeHold.unsafeSwing(lh, threat, heavyRec) then
 				return take("heavy", heavyRec, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
 			end
-			local poke = dodgeHold.pokeRec(lh, threat, "Heavy")
-			if poke then
-				return take("heavy", poke, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
+			if not dodgeHold.theirRange(lh, threat) then
+				local poke = dodgeHold.pokeRec(lh, threat, "Heavy")
+				if poke and not dodgeHold.unsafeSwing(lh, threat, poke) then
+					return take("heavy", poke, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
+				end
 			end
 		end
 		return nil
 	end
 	local function tryLight()
 		if Config.BreakLight and canStartInterrupt(lh) then
-			if lightRec and inReach(lightRec) then
+			if lightRec and inReach(lightRec) and not dodgeHold.unsafeSwing(lh, threat, lightRec) then
 				return take("light", lightRec, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
 			end
-			local poke = dodgeHold.pokeRec(lh, threat, "Light")
-			if poke then
-				return take("light", poke, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
+			if not dodgeHold.theirRange(lh, threat) then
+				local poke = dodgeHold.pokeRec(lh, threat, "Light")
+				if poke and not dodgeHold.unsafeSwing(lh, threat, poke) then
+					return take("light", poke, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
+				end
 			end
 			local chip = bestOfKind(lh, threat, "Light", false)
-			if chip and dodgeHold.chipOk(threat, chip) and jumpDist <= (chip.reach or 7) + 2.2 then
+			if chip and not dodgeHold.theirRange(lh, threat) and dodgeHold.chipOk(threat, chip) and jumpDist <= (chip.reach or 7) + 2.2 then
 				return take("light", chip, Config.BreakLightChance, Config.BreakLightAbs, "chain")
 			end
 		end
@@ -3294,7 +3339,8 @@ local function tryAttackHelper(lh, threat)
 							return true
 						end
 						local dashHit = impactT("DashLight")
-						if not hitL and dodgeHold.cdOk() and not dodgeHold.parryAt(replicaAge, DODGE_CHAIN + dashHit) then
+						local dashT = dodgeHold.cover(0) + dashHit
+						if not hitL and dodgeHold.cdOk() and not dodgeHold.parryAt(replicaAge, dashT) then
 							local rec = { name = "DashLight", kind = "Light" }
 							if d <= ourReach(lh, rec.name) + travel * 0.65 then
 								if dodgeToward(lh, root.Position) then
@@ -3570,6 +3616,9 @@ bind(RunService.Heartbeat, function(dt)
 	if not lh then
 		return
 	end
+	if Config.GodMode then
+		lh.IsDodging = true
+	end
 	local w = tostring(lh.EquippedWeapon)
 	local want = Config.WeaponSkins[w]
 	if type(want) == "string" and want ~= "" and want ~= "Default" then
@@ -3582,13 +3631,13 @@ bind(RunService.Heartbeat, function(dt)
 	if am and not am._dgapDodgeWrap and type(am._checkForDodgeActionChanges) == "function" then
 		am._dgapDodgeWrap = true
 		local oldDodge = am._checkForDodgeActionChanges
-		am._checkForDodgeActionChanges = function(self, moveDir)
+		am._checkForDodgeActionChanges = dodgeHold.asC(function(self, moveDir)
 			local hold = dodgeHold.dir
 			if typeof(hold) == "Vector3" and hold.Magnitude > 0.1 then
 				moveDir = hold
 			end
 			return oldDodge(self, moveDir)
-		end
+		end)
 	end
 	if dodgeHold.dir then
 		if lh.IsDodging or lh._desiredDodge then
@@ -3602,7 +3651,7 @@ bind(RunService.Heartbeat, function(dt)
 	if (Config.CustomCombo or Config.NoDelay) and am and not am._dgapWrap and type(am.TryQueueBasicAttack) == "function" then
 		am._dgapWrap = true
 		local old = am.TryQueueBasicAttack
-		am.TryQueueBasicAttack = function(self, kind, ...)
+		am.TryQueueBasicAttack = dodgeHold.asC(function(self, kind, ...)
 			local ch = self.CharacterHandler
 			local cur = self.CurrentAction
 			local dodging = (cur and cur.ActionType == "Dodge") or (ch and ch.IsDodging == true)
@@ -3654,7 +3703,7 @@ bind(RunService.Heartbeat, function(dt)
 				dbg._ndApply(self)
 			end
 			return r
-		end
+		end)
 	end
 	if not Config.NoDelay then
 		for _, atk in dbg._ndAtk do
@@ -3669,7 +3718,9 @@ bind(RunService.Heartbeat, function(dt)
 	if lh.IsDodging then
 		if not dodgeHold.sawDodge then
 			dodgeHold.sawDodge = true
-			lastDodgeAt = os.clock()
+			if not Config.GodMode then
+				lastDodgeAt = os.clock()
+			end
 		end
 	else
 		dodgeHold.sawDodge = false
@@ -3743,6 +3794,9 @@ bind(RunService.RenderStepped, function(dt)
 		return
 	end
 	local lh = localHandler()
+	if Config.GodMode and lh then
+		lh.IsDodging = true
+	end
 	if lh and lh ~= parrySigLh and lh.Parried then
 		parrySigLh = lh
 		bind(lh.Parried, playParrySound)
@@ -3805,7 +3859,7 @@ bind(RunService.RenderStepped, function(dt)
 				local elapsed = pressed.at and (now - pressed.at) or 0
 				local escape = pressed.escapeRemain
 				local dashHit = pressed.dashHit or 0.35
-				local skipEscape = pressed.from == "jump" or pressed.from == "ah"
+				local skipEscape = pressed.from == "jump"
 				if not skipEscape and type(escape) == "number" and need + dashHit >= escape + 0.08 then
 					clog("DASHATK_SKIP", string.format("escape=%.3f need=%.3f dashHit=%.3f", escape, need, dashHit), threat, lh)
 					pressed.rec = nil
@@ -4640,28 +4694,6 @@ local function isLocalModel(model)
 		return true
 	end
 	return false
-end
-
-local rem = ReplicatedStorage.Remotes.PlayerCharacter.Request.ResolveImpact
-local oldResolve
-oldResolve = hookfunction(rem.FireServer, function(self, id, result, a, b)
-	if Config.GodMode and result == "GetHit" then
-		result = "Dodge"
-	end
-	if result == "Parry" then
-		playParrySound()
-	end
-	return oldResolve(self, id, result, a, b)
-end)
-
-if SoundModule then
-	local oldPlay
-	oldPlay = hookfunction(SoundModule.PlaySound, function(src, opts)
-		if Config.HitSound and os.clock() < muteHitUntil then
-			return nil
-		end
-		return oldPlay(src, opts)
-	end)
 end
 
 local soundFolder = workspace:FindFirstChild("Sound")
