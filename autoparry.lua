@@ -1644,11 +1644,7 @@ local function pressDodge(lh)
 	if not am or not am:CanStartDodge() then
 		return false
 	end
-	local cd = Config.DodgeCooldown
-	if type(cd) ~= "number" or cd < 0.05 then
-		cd = 0.4
-	end
-	if lastDodgeAt > 0 and os.clock() - lastDodgeAt < cd - 0.02 then
+	if not dodgeHold.cdOk() then
 		return false
 	end
 	wrapDodgeCheck(lh)
@@ -2103,6 +2099,26 @@ function dodgeHold.hit(lh)
 	return rec and rec.hit or 0.35
 end
 
+function dodgeHold.cdOk()
+	local cd = Config.DodgeCooldown
+	if type(cd) ~= "number" or cd < 0.05 then
+		cd = 0.4
+	end
+	return lastDodgeAt <= 0 or os.clock() - lastDodgeAt >= cd - 0.02
+end
+
+function dodgeHold.parryAt(blockAge, ourHit)
+	local left = math.max(0, 0.233 - (blockAge or 0))
+	local t = ourHit or 0
+	if t <= left + 0.02 then
+		return true
+	end
+	if t <= left + 0.233 + 0.02 then
+		return true
+	end
+	return false
+end
+
 function dodgeHold.cover(remain)
 	remain = remain or 0
 	if remain >= DODGE_CHAIN - 0.02 then
@@ -2519,7 +2535,7 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 				return take("gapclose", rec, Config.BreakDodgeChance, Config.BreakDodgeAbs, "gapclose")
 			end
 		end
-		if (threat.remain or 0) >= 0.018 then
+		if dodgeHold.cdOk() and dodgeHold.ok(threat, threat.remain, dodgeHold.hit(lh)) then
 			return take("dodge", { name = "DashLight", kind = "Light" }, Config.BreakDodgeChance, Config.BreakDodgeAbs, "dashatk")
 		end
 		return nil
@@ -2976,15 +2992,8 @@ local function tryAttackHelper(lh, threat)
 	end
 
 	local function fire(name, tag, model, root, remain, predPos, fromPos, skipDelay)
-		local hits = attackHits(lh, name, root, model, predPos, fromPos)
-		if not hits then
-			if tag ~= "BLOCKPUNISH" then
-				return false
-			end
-			local d = dist2d(lh.Root.Position, root.Position)
-			if d > ourReach(lh, name) + 1.4 then
-				return false
-			end
+		if not attackHits(lh, name, root, model, predPos, fromPos) then
+			return false
 		end
 		if tag == "BLOCKPUNISH" then
 			dodgeHold.ahAt = nil
@@ -3117,7 +3126,8 @@ local function tryAttackHelper(lh, threat)
 					if type(ourW) == "string" and catalog[ourW] then
 						ourDd = catalog[ourW].dodgeDist or 1
 					end
-					if isRev and not ahDodgeLock[lockK] then
+					local goingAway = isRev or recedingFrom(lh, root, enemyVel(model, root))
+					if goingAway and not ahDodgeLock[lockK] then
 						local fromP = lh.Root.Position
 						local to = Vector3.new(root.Position.X - fromP.X, 0, root.Position.Z - fromP.Z)
 						local away = to.Magnitude > 0.1 and to.Unit or Vector3.new(0, 0, -1)
@@ -3125,7 +3135,7 @@ local function tryAttackHelper(lh, threat)
 						local vflat = Vector3.new(vel.X, 0, vel.Z)
 						local sdir = vflat.Magnitude > 4 and vflat.Unit or away
 						local predI = root.Position + sdir * dodgeSlideDist(ourHit, theirDd)
-						if ourHit >= iframeLeft - 0.05 then
+						if iframeLeft > 0.02 and ourHit >= iframeLeft - 0.05 and ourHit <= iframeLeft + 0.05 then
 							if fire(standName, "PERFDODGE_BACK", model, root, iframeLeft, predI) then
 								ahDodgeLock[lockK] = true
 								return true
@@ -3168,7 +3178,7 @@ local function tryAttackHelper(lh, threat)
 								end
 							end
 						end
-					elseif not isRev and not ahDodgeLock[lockK] then
+					elseif not goingAway and not ahDodgeLock[lockK] then
 						local fromP = lh.Root.Position
 						local to = Vector3.new(root.Position.X - fromP.X, 0, root.Position.Z - fromP.Z)
 						local inDir = to.Magnitude > 0.1 and -to.Unit or Vector3.new(0, 0, -1)
@@ -3176,7 +3186,7 @@ local function tryAttackHelper(lh, threat)
 						local vflat = Vector3.new(vel.X, 0, vel.Z)
 						local sdir = vflat.Magnitude > 4 and vflat.Unit or inDir
 						local predI = root.Position + sdir * dodgeSlideDist(ourHit, theirDd)
-						if ourHit >= iframeLeft - 0.05 then
+						if iframeLeft > 0.02 and ourHit >= iframeLeft - 0.05 and ourHit <= iframeLeft + 0.05 then
 							if fire(standName, "DODGEIN", model, root, iframeLeft, predI) then
 								ahDodgeLock[lockK] = true
 								return true
@@ -3275,16 +3285,16 @@ local function tryAttackHelper(lh, threat)
 				if Config.AHPunishBlock and blocking and not blockPunished[model] then
 					local replicaAge = blockAge or 0
 					local standL = nextL
-					local hitL = attackHits(lh, standL, root, model) or d <= ourReach(lh, standL) + 1.4
+					local hitL = attackHits(lh, standL, root, model)
 					local ourHit = hitT(standL)
-					local parryLeft = math.max(0, 0.233 - replicaAge)
-					local delay = math.max(0, parryLeft - ourHit + 0.02)
+					local delay = math.max(0, math.max(0, 0.233 - replicaAge) - ourHit + 0.02)
 					if holdT >= delay then
-						if hitL and fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
+						if hitL and not dodgeHold.parryAt(replicaAge, ourHit) and fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
 							blockPunished[model] = true
 							return true
 						end
-						if not hitL then
+						local dashHit = impactT("DashLight")
+						if not hitL and dodgeHold.cdOk() and not dodgeHold.parryAt(replicaAge, DODGE_CHAIN + dashHit) then
 							local rec = { name = "DashLight", kind = "Light" }
 							if d <= ourReach(lh, rec.name) + travel * 0.65 then
 								if dodgeToward(lh, root.Position) then
@@ -3316,7 +3326,7 @@ local function tryAttackHelper(lh, threat)
 					end
 				end
 				if blockPunishUntil[model] and now < blockPunishUntil[model] then
-					if fire(nextL, "BLOCKREC", model, root, blockPunishUntil[model] - now) then
+					if not dodgeHold.parryAt(0, hitT(nextL)) and fire(nextL, "BLOCKREC", model, root, blockPunishUntil[model] - now) then
 						return true
 					end
 				end
@@ -3656,6 +3666,14 @@ bind(RunService.Heartbeat, function(dt)
 		table.clear(dbg._ndAtk)
 	end
 	local spdMul = Config.DodgeSpeed or 1
+	if lh.IsDodging then
+		if not dodgeHold.sawDodge then
+			dodgeHold.sawDodge = true
+			lastDodgeAt = os.clock()
+		end
+	else
+		dodgeHold.sawDodge = false
+	end
 	if am and type(am._dodgeStaminaRecoverTime) == "number" then
 		local cd = Config.DodgeCooldown
 		if type(cd) == "number" and cd >= 0.05 then
@@ -4331,8 +4349,8 @@ bind(RunService.RenderStepped, function(dt)
 			if lockedSwing then
 				doParry = false
 			end
-			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and (dodgeHold.ok(threat, threat.remain, dodgeHold.hit(lh)) or threat.remain > parryLead)
-			local doDodge = Config.AutoDodge and combatOn and (not threat.windup) and dodgeCover <= dodgeLead and threat.remain >= 0.018 and (not threat.canParry or threat.remain < 0.04 or not Config.AutoParry or jumpAtk) and canDef and not dodgeDeclined
+			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and dodgeHold.ok(threat, threat.remain, dodgeHold.hit(lh))
+			local doDodge = Config.AutoDodge and combatOn and (not threat.windup) and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and (not threat.canParry or threat.remain < 0.04 or not Config.AutoParry or jumpAtk) and canDef and not dodgeDeclined
 			if pressed.kind == "wait" or pressed.kind == "block" then
 			elseif canDodgeNow then
 				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
@@ -5018,6 +5036,7 @@ function genv._DGAP.buildUI(ctx)
 			end
 		end,
 	})
+	apBase:Header({ Name = "Presets" })
 	apBase:Button({
 		Name = "Blatant",
 		Callback = function()
@@ -5384,6 +5403,7 @@ function genv._DGAP.buildUI(ctx)
 			SemiLegit = { AHChance = 0.78, AHCooldown = 0.24, AHBlockHold = 0.08, AHPunishWhiff = false, AHJumpChase = false },
 			Legit = { AHChance = 0.4, AHCooldown = 0.34, AHBlockHold = 0.12, AHPunishWhiff = false, AHJumpChase = false },
 		}
+		atL:Header({ Name = "Presets" })
 		atL:Button({
 			Name = "AH SemiLegit",
 			Callback = function()
