@@ -1485,7 +1485,7 @@ local function canStartInterrupt(lh)
 	if not cur then
 		return true
 	end
-	return cur.CanCancel == true
+	return cur.CanQueueActions or cur.CanQueueBasicAttacks or cur.CanCancel == true
 end
 
 local function curActName(lh)
@@ -2028,6 +2028,9 @@ local function stepCosmetics(now, lh)
 end
 
 local function attackKind(name)
+	if type(name) ~= "string" then
+		return nil
+	end
 	if string.find(name, "Heavy", 1, true) or name == "DashHeavy" then
 		return "Heavy"
 	end
@@ -2161,9 +2164,6 @@ function dodgeHold.theirRange(lh, threat)
 	if not threat or not lh or not lh.Root then
 		return false
 	end
-	if threat.will then
-		return true
-	end
 	if threat.boxCF and threat.size then
 		return obbHitsSphere(threat.boxCF, threat.size, lh.Root.Position, 3.9)
 	end
@@ -2198,12 +2198,7 @@ function dodgeHold.ok(threat, coverRemain, dashHit)
 	if threat.attack == "JumpAttack" then
 		return true
 	end
-	local need = dodgeHold.cover(coverRemain)
-	local escape = threat.cancelRemain
-	if type(escape) ~= "number" then
-		escape = (threat.remain or 0) + 0.35
-	end
-	return need + (dashHit or 0.35) < escape + 0.08
+	return (coverRemain or threat.remain or 0) <= DODGE_IFRAME + 0.02
 end
 
 function dodgeHold.arm(lh, threat, from, wantFollow)
@@ -2606,7 +2601,7 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 				return take("gapclose", rec, Config.BreakDodgeChance, Config.BreakDodgeAbs, "gapclose")
 			end
 		end
-		if dodgeHold.cdOk() and dodgeHold.ok(threat, threat.remain, dodgeHold.hit(lh)) then
+		if dodgeHold.cdOk() then
 			return take("dodge", { name = "DashLight", kind = "Light" }, Config.BreakDodgeChance, Config.BreakDodgeAbs, "dashatk")
 		end
 		return nil
@@ -3018,7 +3013,7 @@ local function tryAttackHelper(lh, threat)
 	if not Config.AttackHelper or not lh or weStunned(lh) then
 		return false
 	end
-	if pressed.kind and pressed.kind ~= "ah" then
+	if pressed.kind == "parry" or pressed.kind == "dodge" or pressed.kind == "wait" or pressed.kind == "block" or pressed.kind == "dashatk" or pressed.kind == "gapclose" or pressed.kind == "jumpatk" then
 		return false
 	end
 	local now = os.clock()
@@ -3063,7 +3058,7 @@ local function tryAttackHelper(lh, threat)
 	end
 
 	local function fire(name, tag, model, root, remain, predPos, fromPos, skipDelay)
-		if not attackHits(lh, name, root, model, predPos, fromPos) then
+		if tag ~= "BLOCKPUNISH" and not attackHits(lh, name, root, model, predPos, fromPos) then
 			return false
 		end
 		if tag == "BLOCKPUNISH" then
@@ -3072,7 +3067,7 @@ local function tryAttackHelper(lh, threat)
 		elseif dodgeHold.ahAt and now < dodgeHold.ahAt and not skipDelay then
 			return false
 		end
-		if not dodgeHold.ahGate() then
+		if tag ~= "BLOCKPUNISH" and not dodgeHold.ahGate() then
 			return false
 		end
 		if not skipDelay then
@@ -3360,32 +3355,38 @@ local function tryAttackHelper(lh, threat)
 				local vel = enemyVel(model, root)
 				local recede = recedingFrom(lh, root, vel)
 				if Config.AHPunishBlock and blocking and not blockPunished[model] then
-					local replicaAge = blockAge or 0
-					local standL = nextL
-					local hitL = attackHits(lh, standL, root, model)
-					local ourHit = hitT(standL)
-					local delay = math.max(0, math.max(0, 0.233 - replicaAge) - ourHit + 0.02)
-					if holdT >= delay then
-						if hitL and not dodgeHold.parryAt(replicaAge, ourHit) and fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
-							blockPunished[model] = true
-							return true
+						local replicaAge = blockAge or 0
+						local standL = nextL
+						if type(standL) ~= "string" or standL == "DashLight" then
+							standL = "Light01"
 						end
-						local dashHit = impactT("DashLight")
-						local dashT = dodgeHold.cover(0) + dashHit
-						if not hitL and dodgeHold.cdOk() and not dodgeHold.parryAt(replicaAge, dashT) then
-							local rec = { name = "DashLight", kind = "Light" }
-							if d <= ourReach(lh, rec.name) + travel * 0.65 then
-								if dodgeToward(lh, root.Position) then
-									lastAH = now
-									lastDodgeAt = now
-									pressed.kind = "dashatk"
-									pressed.untilTime = now + 0.38
-									pressed.at = now
-									pressed.from = "ah"
-									pressed.rec = rec
-									dbg.helper += 1
-									blockPunished[model] = true
-									clog("AH_BLOCKDASH", string.format("gap dodge+%s hold=%.3f age=%.3f d=%.2f recede=%s", rec.name, holdT, replicaAge, d, tostring(recede)), {
+						local ourHit = hitT(standL)
+						local left = math.max(0, 0.233 - replicaAge)
+						local delay = math.max(0, left - ourHit + 0.02)
+						local inStand = attackHits(lh, standL, root, model) or d <= ourReach(lh, standL) + 1.4
+						if inStand then
+							if holdT >= delay and fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
+								blockPunished[model] = true
+								return true
+							end
+						elseif dodgeHold.cdOk() then
+								local rec = { name = "DashLight", kind = "Light" }
+								local dashHit = impactT("DashLight")
+								if d <= ourReach(lh, rec.name) + travel * 0.65 then
+									if dodgeToward(lh, root.Position) then
+										lastAH = now
+										lastDodgeAt = now
+										pressed.kind = "dashatk"
+										pressed.untilTime = now + 0.55
+										pressed.at = now
+										pressed.from = "ah"
+										pressed.rec = rec
+										pressed.coverRemain = 0
+										pressed.escapeRemain = nil
+										pressed.dashHit = dashHit
+										dbg.helper += 1
+										blockPunished[model] = true
+										clog("AH_BLOCKDASH", string.format("gap dodge+%s hold=%.3f age=%.3f d=%.2f recede=%s", rec.name, holdT, replicaAge, d, tostring(recede)), {
 										weapon = equippedName(model),
 										attack = "BLOCKDASH",
 										remain = 0,
@@ -3402,7 +3403,6 @@ local function tryAttackHelper(lh, threat)
 							end
 						end
 					end
-				end
 				if blockPunishUntil[model] and now < blockPunishUntil[model] then
 					if not dodgeHold.parryAt(0, hitT(nextL)) and fire(nextL, "BLOCKREC", model, root, blockPunishUntil[model] - now) then
 						return true
@@ -3887,40 +3887,37 @@ bind(RunService.RenderStepped, function(dt)
 					ready = false
 				else
 				local cover = pressed.coverRemain or 0
-				local need = dodgeHold.cover(cover)
-				local elapsed = pressed.at and (now - pressed.at) or 0
-				local escape = pressed.escapeRemain
-				local dashHit = pressed.dashHit or 0.35
-				local skipEscape = pressed.from == "jump"
-				if not skipEscape and type(escape) == "number" and need + dashHit >= escape + 0.08 then
-					clog("DASHATK_SKIP", string.format("escape=%.3f need=%.3f dashHit=%.3f", escape, need, dashHit), threat, lh)
-					pressed.rec = nil
-					ready = false
-				elseif elapsed < need then
-					if cover <= DODGE_CHAIN then
-						ready = canQueueAttack(lh)
-					else
-						ready = false
+					local need = dodgeHold.cover(cover)
+					local elapsed = pressed.at and (now - pressed.at) or 0
+					if elapsed < need then
+						if cover <= DODGE_CHAIN then
+							ready = canQueueAttack(lh)
+						else
+							ready = false
+						end
 					end
-				end
 				end
 			end
 			if ready then
 				if pressed.kind == "dashatk" then
-					local am = lh.ActionManager
-					local aimRoot = (threat and threat.root) or pressed.enemyRoot
-					if aimRoot and lh.Root then
-						moveDirToward(lh, aimRoot.Position)
-					end
-					if pressed.rec and pressed.rec.kind == "Heavy" then
-						am:SetNextHeavyAttackName(pressed.rec.name or "DashHeavy", 0.35)
-						am:TryQueueBasicAttack("Heavy")
-						clog("DASHATK_HIT", "DashHeavy queued", threat, lh)
-					else
-						am:SetNextLightAttackName("DashLight", 0.35)
-						am:TryQueueBasicAttack("Light")
-						clog("DASHATK_HIT", "DashLight queued", threat, lh)
-					end
+						local am = lh.ActionManager
+						if not am then
+							ready = false
+						else
+						local aimRoot = (threat and threat.root) or pressed.enemyRoot
+						if aimRoot and lh.Root then
+							moveDirToward(lh, aimRoot.Position)
+						end
+						if pressed.rec and pressed.rec.kind == "Heavy" then
+							am:SetNextHeavyAttackName(pressed.rec.name or "DashHeavy", 0.35)
+							am:TryQueueBasicAttack("Heavy")
+							clog("DASHATK_HIT", "DashHeavy queued", threat, lh)
+						else
+							am:SetNextLightAttackName("DashLight", 0.35)
+							am:TryQueueBasicAttack("Light")
+							clog("DASHATK_HIT", "DashLight queued", threat, lh)
+						end
+						end
 				elseif pressed.kind == "gapclose" then
 					if pressed.rec then
 						queueNamed(lh, pressed.rec)
@@ -4014,9 +4011,9 @@ bind(RunService.RenderStepped, function(dt)
 			clog("THREAT", string.format("parryable=%s windup=%s saDmg=%.0f imp=%s/%s %s", tostring(threat.canParry), tostring(threat.windup), threat.saDmg or 0, tostring(threat.impIndex or 1), tostring(threat.impN or 1), ourHits(lh)), threat, lh)
 		end
 	end
-	if lh and Config.AttackHelper and pressed.kind == nil then
-		tryAttackHelper(lh, threat)
-	end
+	if lh and Config.AttackHelper and (pressed.kind == nil or pressed.kind == "ah" or pressed.kind == "interrupt" or pressed.kind == "chip") then
+			tryAttackHelper(lh, threat)
+		end
 	if pressed.kind == "ah" or pressed.kind == "jumpatk" then
 		if threat and threat.will and not threat.windup then
 			pressed.kind = nil
