@@ -93,6 +93,7 @@ local Config = {
 	AttackHelper = true,
 	AHPreset = "SemiLegit",
 	AHChance = 1,
+	AHHumanDelay = false,
 	PerfectDodgeCounter = true,
 	AHPunishBlock = true,
 	AHPunishWhiff = true,
@@ -2116,6 +2117,40 @@ function dodgeHold.cdOk()
 	return lastDodgeAt <= 0 or os.clock() - lastDodgeAt >= cd - 0.02
 end
 
+function dodgeHold.ahGate()
+	if dbg._repeat("ah") then
+		return false
+	end
+	local ch = Config.AHChance or 1
+	if ch < 0.999 and rng:NextNumber() > ch then
+		return false
+	end
+	return true
+end
+
+function dodgeHold.ahHd(remain, needRemain)
+	if Config.NoDelay then
+		return 0
+	end
+	if not Config.AHHumanDelay and not Config.HumanDelay then
+		return 0
+	end
+	local lo = Config.HumanDelayMin or 0.016
+	local hi = Config.HumanDelayMax or 0.045
+	if hi < lo then
+		hi = lo
+	end
+	local slack = math.max(0, (remain or 0) - (needRemain or 0.03) - 0.01)
+	if slack <= 0.004 then
+		return 0
+	end
+	local d = lo + rng:NextNumber() * (hi - lo)
+	if d > slack then
+		d = slack * (0.4 + rng:NextNumber() * 0.45)
+	end
+	return d
+end
+
 function dodgeHold.parryAt(blockAge, ourHit)
 	local t = ourHit or 0
 	local left = math.max(0, 0.233 - (blockAge or 0))
@@ -2989,7 +3024,10 @@ local function noteSwing(model, attack, tpos, will)
 end
 
 local function tryAttackHelper(lh, threat)
-	if not Config.AttackHelper or not lh or weStunned(lh) or pressed.kind then
+	if not Config.AttackHelper or not lh or weStunned(lh) then
+		return false
+	end
+	if pressed.kind and pressed.kind ~= "ah" then
 		return false
 	end
 	local now = os.clock()
@@ -2998,11 +3036,8 @@ local function tryAttackHelper(lh, threat)
 		if an == "JumpAttack" or an == "Ultimate" or string.find(an, "Ultimate", 1, true) then
 			return false
 		end
-		if threat.will then
-			return false
-		end
 	end
-	if not canStartInterrupt(lh) or not lh.Root then
+	if not lh.Root then
 		return false
 	end
 	local ahBusy = os.clock() - lastAH < (Config.AHCooldown or 0.18)
@@ -3046,14 +3081,11 @@ local function tryAttackHelper(lh, threat)
 		elseif dodgeHold.ahAt and now < dodgeHold.ahAt and not skipDelay then
 			return false
 		end
-		if tag ~= "BLOCKPUNISH" and dbg._repeat("ah") then
+		if not dodgeHold.ahGate() then
 			return false
 		end
-		if tag ~= "BLOCKPUNISH" and (Config.AHChance or 1) < 0.999 and rng:NextNumber() > Config.AHChance then
-			return false
-		end
-		if not skipDelay and tag ~= "BLOCKPUNISH" then
-			local delay = dbg._hd(0.22, 0.06)
+		if not skipDelay then
+			local delay = dodgeHold.ahHd(0.22, 0.06)
 			if delay > 0.01 then
 				dodgeHold.ahAt = now + delay
 				dodgeHold.ahPend = { name = name, tag = tag, model = model, root = root, remain = remain, predPos = predPos, fromPos = fromPos }
@@ -3157,7 +3189,11 @@ local function tryAttackHelper(lh, threat)
 				if not dodgeAge then
 					ahDodgeLock[lockK] = nil
 				end
-				if not ahBusy and Config.PerfectDodgeCounter and dodgeAge then
+				local fromParry = dodgeHold.parryWatch and dodgeHold.parryWatch[model] and now < dodgeHold.parryWatch[model]
+				if dodgeAge and pressed.kind == "ah" then
+					pressed.kind = nil
+				end
+				if (not ahBusy or fromParry) and Config.PerfectDodgeCounter and dodgeAge then
 					local iframeLeft = DODGE_IFRAME - dodgeAge
 					local d = dist2d(lh.Root.Position, root.Position)
 					local standName = comboAttackName(lh, "Light")
@@ -3171,8 +3207,9 @@ local function tryAttackHelper(lh, threat)
 					if type(ourW) == "string" and catalog[ourW] then
 						ourDd = catalog[ourW].dodgeDist or 1
 					end
-					local goingAway = isRev or recedingFrom(lh, root, enemyVel(model, root))
-					if goingAway and not ahDodgeLock[lockK] then
+					local goingAway = isRev or recedingFrom(lh, root, enemyVel(model, root)) or fromParry
+					local theirSwing = swinging or (threat and threat.will and threat.model == model and not threat.windup)
+					if goingAway and not ahDodgeLock[lockK] and not theirSwing then
 						local fromP = lh.Root.Position
 						local to = Vector3.new(root.Position.X - fromP.X, 0, root.Position.Z - fromP.Z)
 						local away = to.Magnitude > 0.1 and to.Unit or Vector3.new(0, 0, -1)
@@ -3194,7 +3231,7 @@ local function tryAttackHelper(lh, threat)
 							local predThem = root.Position + away * theirSlide
 							local reach = ourReach(lh, "DashLight")
 							local gap = dist2d(predUs, predThem)
-							if attackHits(lh, "DashLight", root, model, predThem, predUs) or gap <= reach + 2.4 then
+							if (attackHits(lh, "DashLight", root, model, predThem, predUs) or gap <= reach + 2.4) and dodgeHold.ahGate() and dodgeHold.cdOk() then
 								if dodgeToward(lh, root.Position) then
 									ahDodgeLock[lockK] = true
 									lastAH = now
@@ -3282,6 +3319,8 @@ local function tryAttackHelper(lh, threat)
 				if blocking then
 					if blockingAnim and (blockAge or 1) < 0.07 and blockSince[model] and (now - blockSince[model]) > 0.12 then
 						blockSince[model] = now
+						dodgeHold.parryWatch = dodgeHold.parryWatch or {}
+						dodgeHold.parryWatch[model] = now + 0.7
 						clog("AH_BLOCK_RETAP", string.format("age=%.3f reset wait", blockAge or 0), {
 							weapon = equippedName(model),
 							attack = "BLOCK",
@@ -3296,6 +3335,8 @@ local function tryAttackHelper(lh, threat)
 						}, lh)
 					elseif not blockSince[model] then
 						blockSince[model] = now
+						dodgeHold.parryWatch = dodgeHold.parryWatch or {}
+						dodgeHold.parryWatch[model] = now + 0.7
 						clog("AH_BLOCK_SEEN", string.format("parryWin hold start d=%.2f age=%.3f", dist2d(lh.Root.Position, root.Position), blockAge or 0), {
 							weapon = equippedName(model),
 							attack = "BLOCK",
@@ -4909,6 +4950,7 @@ function genv._DGAP.buildUI(ctx)
 			AttackHelper = true,
 			AHPreset = "SemiLegit",
 			AHChance = 1,
+			AHHumanDelay = false,
 			PerfectDodgeCounter = true,
 			AHPunishBlock = true,
 			AHPunishWhiff = true,
@@ -4954,6 +4996,7 @@ function genv._DGAP.buildUI(ctx)
 			AttackHelper = true,
 			AHPreset = "SemiLegit",
 			AHChance = 0.78,
+			AHHumanDelay = true,
 			PerfectDodgeCounter = true,
 			AHPunishBlock = true,
 			AHPunishWhiff = false,
@@ -4999,6 +5042,7 @@ function genv._DGAP.buildUI(ctx)
 			AttackHelper = true,
 			AHPreset = "Legit",
 			AHChance = 0.4,
+			AHHumanDelay = true,
 			PerfectDodgeCounter = true,
 			AHPunishBlock = true,
 			AHPunishWhiff = false,
@@ -5432,8 +5476,8 @@ function genv._DGAP.buildUI(ctx)
 			end,
 		})
 		local AH_PRESETS = {
-			SemiLegit = { AHChance = 0.78, AHCooldown = 0.24, AHBlockHold = 0.08, AHPunishWhiff = false, AHJumpChase = false },
-			Legit = { AHChance = 0.4, AHCooldown = 0.34, AHBlockHold = 0.12, AHPunishWhiff = false, AHJumpChase = false },
+			SemiLegit = { AHChance = 0.78, AHCooldown = 0.24, AHBlockHold = 0.08, AHPunishWhiff = false, AHJumpChase = false, AHHumanDelay = true },
+			Legit = { AHChance = 0.4, AHCooldown = 0.34, AHBlockHold = 0.12, AHPunishWhiff = false, AHJumpChase = false, AHHumanDelay = true },
 		}
 		atL:Header({ Name = "Presets" })
 		atL:Button({
@@ -5499,6 +5543,23 @@ function genv._DGAP.buildUI(ctx)
 				Config.AHCooldown = v
 			end,
 		})
+		slider(atL, {
+			Name = "AH Chance",
+			Flag = "DG_AHChance",
+			Default = Config.AHChance,
+			Min = 0,
+			Max = 1,
+			Precision = 2,
+			Desc = "How often helper acts.",
+			Callback = function(v)
+				Config.AHChance = v
+			end,
+		})
+		boolToggle(atL, "AH Humanize", "DG_AHHumanDelay", function()
+			return Config.AHHumanDelay
+		end, function(v)
+			Config.AHHumanDelay = v
+		end, "Random wait on helper. Uses Delay Min/Max.")
 		slider(atL, {
 			Name = "Block Hold",
 			Flag = "DG_AHBlockHold",
