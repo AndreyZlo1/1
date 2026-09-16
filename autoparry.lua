@@ -2154,10 +2154,7 @@ end
 function dodgeHold.parryAt(blockAge, ourHit)
 	local t = ourHit or 0
 	local left = math.max(0, 0.233 - (blockAge or 0))
-	if t <= left + 0.02 then
-		return true
-	end
-	return t > left
+	return t <= left + 0.02
 end
 
 function dodgeHold.theirRange(lh, threat)
@@ -2181,9 +2178,6 @@ function dodgeHold.unsafeSwing(lh, threat, rec)
 	local theirHit = threat.remain or 0
 	local esc = threat.cancelRemain
 	if type(esc) == "number" and ourHit > esc + 0.02 then
-		return true
-	end
-	if dodgeHold.theirRange(lh, threat) and ourHit + 0.08 >= theirHit then
 		return true
 	end
 	return false
@@ -2417,9 +2411,6 @@ local function bestOfKind(lh, threat, wantKind, needBreak)
 	local slack = 0
 	if wantKind == "Heavy" and (isUlt or string.find(atkName, "Heavy", 1, true)) then
 		slack = -0.05
-	end
-	if threat.will then
-		slack = slack - 0.08
 	end
 	local function fits(name)
 		if type(name) ~= "string" or name == "none" then
