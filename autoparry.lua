@@ -2195,8 +2195,8 @@ function dodgeHold.ok(threat, coverRemain, dashHit)
 	if not threat then
 		return true
 	end
-	if threat.attack == "JumpAttack" then
-		return true
+	if threat.attack == "JumpAttack" or (threat.superArmor or 0) >= 100 then
+		return false
 	end
 	return (coverRemain or threat.remain or 0) <= DODGE_IFRAME + 0.02
 end
@@ -3058,7 +3058,7 @@ local function tryAttackHelper(lh, threat)
 	end
 
 	local function fire(name, tag, model, root, remain, predPos, fromPos, skipDelay)
-		if tag ~= "BLOCKPUNISH" and not attackHits(lh, name, root, model, predPos, fromPos) then
+		if tag ~= "BLOCKPUNISH" and tag ~= "DODGEHIT" and not attackHits(lh, name, root, model, predPos, fromPos) then
 			return false
 		end
 		if tag == "BLOCKPUNISH" then
@@ -3067,7 +3067,7 @@ local function tryAttackHelper(lh, threat)
 		elseif dodgeHold.ahAt and now < dodgeHold.ahAt and not skipDelay then
 			return false
 		end
-		if tag ~= "BLOCKPUNISH" and not dodgeHold.ahGate() then
+		if tag ~= "BLOCKPUNISH" and tag ~= "DODGEHIT" and not dodgeHold.ahGate() then
 			return false
 		end
 		if not skipDelay then
@@ -3171,6 +3171,18 @@ local function tryAttackHelper(lh, threat)
 								if (jumping or swinging or (threat and threat.will and threat.model == model and not threat.windup)) and not dodgeAge and not blockingAnim then
 									continue
 								end
+				if handler and handler.IsDodging and not dodgeAge then
+					local amh = handler.ActionManager
+					local cur = amh and amh.CurrentAction
+					if cur and cur.ActionType == "Dodge" then
+						dodgeAge = cur.ActionTime or 0
+						if cur.Properties and cur.Properties.isReverse then
+							isRev = true
+						end
+					else
+						dodgeAge = 0.05
+					end
+				end
 				local lockK = tostring(model)
 				if not dodgeAge then
 					ahDodgeLock[lockK] = nil
@@ -3182,8 +3194,10 @@ local function tryAttackHelper(lh, threat)
 				if (not ahBusy or fromParry) and Config.PerfectDodgeCounter and dodgeAge then
 					local iframeLeft = DODGE_IFRAME - dodgeAge
 					local d = dist2d(lh.Root.Position, root.Position)
-					local standName = comboAttackName(lh, "Light")
-					local ourHit = impactT(standName)
+					local standName = "Light01"
+					local ourHit = hitT("Light01")
+					local landAt = dodgeAge + ourHit
+					local ping = pingPad()
 					local theirW = equippedName(model)
 					local theirDd = 1
 					if type(theirW) == "string" and catalog[theirW] then
@@ -3195,6 +3209,19 @@ local function tryAttackHelper(lh, threat)
 					end
 					local goingAway = isRev or recedingFrom(lh, root, enemyVel(model, root)) or fromParry
 					local theirSwing = swinging or (threat and threat.will and threat.model == model and not threat.windup)
+					if not ahDodgeLock[lockK] and not theirSwing then
+						if dodgeHold.parryLock then
+							dodgeHold.parryLock[model] = nil
+						end
+						if landAt >= DODGE_IFRAME - 0.02 and landAt <= 0.466 + ping then
+							if attackHits(lh, standName, root, model) or d <= ourReach(lh, standName) + 1.4 then
+								if fire(standName, "DODGEHIT", model, root, iframeLeft, nil, nil, true) then
+									ahDodgeLock[lockK] = true
+									return true
+								end
+							end
+						end
+					end
 					if goingAway and not ahDodgeLock[lockK] and not theirSwing then
 						local fromP = lh.Root.Position
 						local to = Vector3.new(root.Position.X - fromP.X, 0, root.Position.Z - fromP.Z)
@@ -3203,14 +3230,14 @@ local function tryAttackHelper(lh, threat)
 						local vflat = Vector3.new(vel.X, 0, vel.Z)
 						local sdir = vflat.Magnitude > 4 and vflat.Unit or away
 						local predI = root.Position + sdir * dodgeSlideDist(ourHit, theirDd)
-						if iframeLeft > 0.02 and ourHit >= iframeLeft - 0.05 and ourHit <= iframeLeft + 0.05 then
+						if iframeLeft > 0.02 and landAt >= DODGE_IFRAME - 0.02 and landAt <= 0.466 + ping then
 							if fire(standName, "PERFDODGE_BACK", model, root, iframeLeft, predI) then
 								ahDodgeLock[lockK] = true
 								return true
 							end
 						end
 						local dashHit = impactT("DashLight")
-						if iframeLeft >= 0.14 then
+						if iframeLeft >= 0.14 and dodgeAge + DODGE_CHAIN + dashHit <= 0.466 + ping then
 							local ourSlide = dodgeSlideDist(DODGE_CHAIN, ourDd)
 							local theirSlide = dodgeSlideDist(math.min(0.466 - dodgeAge, DODGE_CHAIN + dashHit), theirDd)
 							local predUs = fromP + away * ourSlide
@@ -3356,16 +3383,18 @@ local function tryAttackHelper(lh, threat)
 				local recede = recedingFrom(lh, root, vel)
 				if Config.AHPunishBlock and blocking and not blockPunished[model] then
 						local replicaAge = blockAge or 0
-						local standL = nextL
-						if type(standL) ~= "string" or standL == "DashLight" then
-							standL = "Light01"
-						end
+						local standL = "Light01"
 						local ourHit = hitT(standL)
 						local left = math.max(0, 0.233 - replicaAge)
-						local delay = math.max(0, left - ourHit + 0.02)
+						local delay = math.max(0, left - ourHit + pingPad())
+						local locked = dodgeHold.parryLock and dodgeHold.parryLock[model] and now < dodgeHold.parryLock[model]
+					if not locked and dodgeHold.parryLock and handler and handler.OriginalModel then
+						locked = dodgeHold.parryLock[handler.OriginalModel] and now < dodgeHold.parryLock[handler.OriginalModel]
+					end
 						local inStand = attackHits(lh, standL, root, model) or d <= ourReach(lh, standL) + 1.4
-						if inStand then
-							if holdT >= delay and fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
+						if locked then
+						elseif inStand then
+							if holdT >= delay and canQueueAttack(lh) and fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
 								blockPunished[model] = true
 								return true
 							end
@@ -4113,7 +4142,7 @@ bind(RunService.RenderStepped, function(dt)
 			if Config.AutoDodge and not lh.IsDodging then
 				local dodged, ddir = dodgeAt(lh, threat.root.Position, jdist, true)
 				if dodged then
-						dodgeHold.arm(lh, threat, "jump", true)
+						dodgeHold.arm(lh, threat, "jump", false)
 						dbg.dodge += 1
 						dbg._note("dodge")
 						lastDodgeAt = now
@@ -4746,12 +4775,28 @@ bind(ReplicatedStorage.Remotes.Combat.Impact.OnClientEvent, function(_, effect, 
 		dlog("HIT_FX", "effect=" .. tostring(effect))
 	end
 	if isLocalModel(attacker) and PARRY_EFFECTS[effect] then
-		dbg.enemyParry += 1
-		dlog("ENEMY_PARRY", "effect=" .. tostring(effect) .. " def=" .. tostring(defender and defender.Name))
-	end
-	if isLocalModel(attacker) and (effect == "Block" or effect == "LightBlock" or effect == "UltimateBlock") then
-		dbg.enemyBlock += 1
-		dlog("ENEMY_BLOCK", "effect=" .. tostring(effect) .. " def=" .. tostring(defender and defender.Name))
+			dbg.enemyParry += 1
+			dlog("ENEMY_PARRY", "effect=" .. tostring(effect) .. " def=" .. tostring(defender and defender.Name))
+			dodgeHold.parryLock = dodgeHold.parryLock or {}
+			if defender then
+				dodgeHold.parryLock[defender] = os.clock() + 0.65
+				local hd = CharacterController:GetCharacterHandler(defender)
+				if hd and hd.OriginalModel then
+					dodgeHold.parryLock[hd.OriginalModel] = os.clock() + 0.65
+				end
+			end
+		end
+		if isLocalModel(attacker) and (effect == "Block" or effect == "LightBlock" or effect == "UltimateBlock") then
+			dbg.enemyBlock += 1
+			dlog("ENEMY_BLOCK", "effect=" .. tostring(effect) .. " def=" .. tostring(defender and defender.Name))
+			dodgeHold.parryLock = dodgeHold.parryLock or {}
+			if defender then
+				dodgeHold.parryLock[defender] = os.clock() + 0.45
+				local hb = CharacterController:GetCharacterHandler(defender)
+				if hb and hb.OriginalModel then
+					dodgeHold.parryLock[hb.OriginalModel] = os.clock() + 0.45
+				end
+			end
 	end
 	if isLocalModel(defender) and PARRY_EFFECTS[effect] then
 		playParrySound()
