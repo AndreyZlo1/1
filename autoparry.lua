@@ -43,6 +43,7 @@ local Config = {
 	HumanDelayMin = 0,
 	HumanDelayMax = 0,
 	NoRepeat = false,
+	NoRepeatCounter = false,
 	EspStyle = "Soul",
 	EspColorA = Color3.fromRGB(70, 230, 255),
 	EspColorB = Color3.fromRGB(190, 80, 255),
@@ -1714,11 +1715,53 @@ local function dodgeSide(lh, dest)
 	return pressDodge(lh)
 end
 
+function dodgeHold.coverDir(lh, dest)
+	if not lh or not lh.Root then
+		return false, "none"
+	end
+	local from = lh.Root.Position
+	local p = dest
+	if typeof(dest) ~= "Vector3" and dest then
+		p = dest.Position
+	end
+	if typeof(p) ~= "Vector3" then
+		p = from
+	end
+	local to = Vector3.new(p.X - from.X, 0, p.Z - from.Z)
+	if to.Magnitude < 0.1 then
+		to = Vector3.new(lh.Root.CFrame.LookVector.X, 0, lh.Root.CFrame.LookVector.Z)
+	end
+	if to.Magnitude < 0.1 then
+		to = Vector3.new(0, 0, -1)
+	else
+		to = to.Unit
+	end
+	lh.DesiredLookDirection = to
+	lh.DesiredLookResponsiveness = 90
+	local r = rng:NextInteger(1, 4)
+	local dir = to
+	local tag = "fwd"
+	if r == 2 then
+		dir = -to
+		tag = "back"
+	elseif r == 3 then
+		dir = Vector3.new(-to.Z, 0, to.X)
+		tag = "left"
+	elseif r == 4 then
+		dir = Vector3.new(to.Z, 0, -to.X)
+		tag = "right"
+	end
+	lh.DesiredMoveDirection = dir
+	dodgeHold.dir = dir
+	wrapDodgeCheck(lh)
+	return pressDodge(lh), tag
+end
+
 local function dodgeAt(lh, dest, dist, forceToward)
-	if forceToward or dist < 0 or dist >= 5.5 then
+	if forceToward or (type(dist) == "number" and dist >= 8) then
 		return dodgeToward(lh, dest), "fwd"
 	end
-	return dodgeToward(lh, dest), "fwd"
+	return dodgeHold.coverDir(lh, dest)
 end
 
 local skinIdx = 1
@@ -2252,8 +2295,7 @@ function dodgeHold.go(lh, threat, dest, dist, recede, from, wantFollow)
 	if follow then
 		dodged, ddir = dodgeAt(lh, dest, dist, recede)
 	else
-		dodged = dodgeHold.free(lh)
-		ddir = "free"
+		dodged, ddir = dodgeHold.coverDir(lh, dest)
 	end
 	if dodged then
 		dodgeHold.arm(lh, threat, from, follow)
@@ -2904,7 +2946,11 @@ dbg._note = function(kind)
 end
 
 dbg._repeat = function(kind)
-	if not Config.NoRepeat then
+	local on = Config.NoRepeat
+	if not on and Config.NoRepeatCounter and (kind == "dodge" or kind == "ah") then
+		on = true
+	end
+	if not on then
 		return false
 	end
 	local h = dbg._hist
@@ -3511,14 +3557,16 @@ local function tryAttackHelper(lh, threat)
 						else
 							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":range", string.format("no standing d=%.2f reach=%.2f (no dashatk on parry)", d, ourReach(lh, standL)), fakeB, lh)
 						end
-						if locked then
-							elseif inStand then
+						if swinging or jumping or (threat and threat.will and threat.model == model and not threat.windup) then
+							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":swing", string.format("block+swing no punish jump=%s swing=%s sa=%.0f atk=%s", tostring(jumping), tostring(swinging), (threat and threat.model == model and threat.superArmor) or 0, tostring(threat and threat.model == model and threat.attack)), fakeB, lh)
+						elseif locked then
+						elseif inStand then
 							if holdT >= delay and canQueueAttack(lh) and fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
 								blockPunished[model] = true
 								return true
 							end
-							end
-							if blockPunishUntil[model] and now < blockPunishUntil[model] then
+						end
+						if blockPunishUntil[model] and now < blockPunishUntil[model] and not swinging and not jumping then
 					if not dodgeHold.parryAt(0, hitT(nextL)) and fire(nextL, "BLOCKREC", model, root, blockPunishUntil[model] - now) then
 						return true
 					end
@@ -4226,8 +4274,8 @@ bind(RunService.RenderStepped, function(dt)
 			end
 			local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
 			local did = false
-			if Config.AutoDodge and not lh.IsDodging then
-				local dodged, ddir = dodgeAt(lh, threat.root.Position, jdist, true)
+			if Config.AutoDodge and not lh.IsDodging and not dbg._repeat("dodge") then
+				local dodged, ddir = dodgeHold.coverDir(lh, threat.root.Position)
 				if dodged then
 						dodgeHold.arm(lh, threat, "jump", false)
 						dbg.dodge += 1
@@ -4551,7 +4599,7 @@ bind(RunService.RenderStepped, function(dt)
 			if lockedSwing then
 				doParry = false
 			end
-			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined
+			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and not dbg._repeat("dodge")
 			local doDodge = Config.AutoDodge and combatOn and (not threat.windup) and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and (not threat.canParry or threat.remain < 0.04 or not Config.AutoParry or jumpAtk) and canDef and not dodgeDeclined
 			if pressed.kind == "wait" or pressed.kind == "block" then
 			elseif canDodgeNow then
@@ -5068,6 +5116,7 @@ function genv._DGAP.buildUI(ctx)
 			HumanDelayMin = 0,
 			HumanDelayMax = 0,
 			NoRepeat = false,
+			NoRepeatCounter = false,
 			ParryLead = 0,
 			DodgeLead = 0.22,
 			AttackHelper = true,
@@ -5114,6 +5163,7 @@ function genv._DGAP.buildUI(ctx)
 			HumanDelayMin = 0.018,
 			HumanDelayMax = 0.042,
 			NoRepeat = false,
+			NoRepeatCounter = false,
 			ParryLead = 0,
 			DodgeLead = 0.22,
 			AttackHelper = true,
@@ -5160,6 +5210,7 @@ function genv._DGAP.buildUI(ctx)
 			HumanDelayMin = 0.032,
 			HumanDelayMax = 0.078,
 			NoRepeat = true,
+			NoRepeatCounter = true,
 			ParryLead = 0,
 			DodgeLead = 0.22,
 			AttackHelper = true,
@@ -5387,6 +5438,11 @@ function genv._DGAP.buildUI(ctx)
 	end, function(v)
 		Config.NoRepeat = v
 	end, "Skips a defense if it was used too much recently.")
+	boolToggle(apDelay, "No Repeat Counters", "DG_NoRepeatCounter", function()
+		return Config.NoRepeatCounter
+	end, function(v)
+		Config.NoRepeatCounter = v
+	end, "If a dodge-attack counter was used too much, parry instead.")
 
 	local apPlay = AutoParry:Section({ Side = "Right" })
 	apPlay:Header({ Name = "AutoPlay" })
