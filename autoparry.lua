@@ -2209,6 +2209,19 @@ function dodgeHold.ok(threat, coverRemain, dashHit)
 	return (coverRemain or threat.remain or 0) <= DODGE_IFRAME + 0.02
 end
 
+function dodgeHold.followRec(lh, threat)
+	if not dodgeHold.ok(threat, threat and threat.remain, dodgeHold.hit(lh)) then
+		return nil
+	end
+	local theirSa = threat.superArmor or 0
+	local esc = threat.cancelRemain
+	local dhLand = DODGE_CHAIN + 0.5
+	if theirSa > 20 and type(esc) == "number" and dhLand <= esc - 0.02 then
+		return { name = "DashHeavy", kind = "Heavy" }
+	end
+	return { name = "DashLight", kind = "Light" }
+end
+
 function dodgeHold.arm(lh, threat, from, wantFollow)
 	local now = os.clock()
 	pressed.kind = "dashatk"
@@ -2221,14 +2234,8 @@ function dodgeHold.arm(lh, threat, from, wantFollow)
 	pressed.coverRemain = threat and threat.remain or 0
 	pressed.escapeRemain = threat and threat.cancelRemain
 	pressed.dashHit = dodgeHold.hit(lh)
-	if wantFollow then
-		if threat and (threat.attack == "JumpAttack" or (threat.superArmor or 0) >= 100) then
-			pressed.rec = { name = "DashLight", kind = "Light" }
-		elseif dodgeHold.ok(threat, pressed.coverRemain, pressed.dashHit) then
-			pressed.rec = { name = "DashLight", kind = "Light" }
-		else
-			pressed.rec = nil
-		end
+	if wantFollow and dodgeHold.ok(threat, pressed.coverRemain, pressed.dashHit) then
+		pressed.rec = dodgeHold.followRec(lh, threat) or { name = "DashLight", kind = "Light" }
 	else
 		pressed.rec = nil
 	end
@@ -2418,9 +2425,6 @@ local function bestOfKind(lh, threat, wantKind, needBreak)
 		pad = 0.10
 	end
 	local slack = 0
-	if wantKind == "Heavy" and (isUlt or string.find(atkName, "Heavy", 1, true)) then
-		slack = -0.05
-	end
 	local function fits(name)
 		if type(name) ~= "string" or name == "none" then
 			return nil
@@ -2627,8 +2631,11 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 				return take("gapclose", rec, Config.BreakDodgeChance, Config.BreakDodgeAbs, "gapclose")
 			end
 		end
-		if dodgeHold.cdOk() then
-			return take("dodge", { name = "DashLight", kind = "Light" }, Config.BreakDodgeChance, Config.BreakDodgeAbs, "dashatk")
+		if dodgeHold.cdOk() and (threat.remain or 0) <= 0.22 then
+			local frec = dodgeHold.followRec(lh, threat)
+			if frec then
+				return take("dodge", frec, Config.BreakDodgeChance, Config.BreakDodgeAbs, "dashatk")
+			end
 		end
 		return nil
 	end
@@ -3312,7 +3319,7 @@ local function tryAttackHelper(lh, threat)
 					local dashHit = impactT("DashLight")
 					local ourLand = DODGE_CHAIN + dashHit
 					local canBlockAt = 0.466 - dodgeAge
-					local iframeOk = ourLand >= iframeLeft + 0.04
+					local iframeOk = iframeLeft > 0.04 and ourLand >= iframeLeft + 0.04 and ourLand <= canBlockAt
 					if not inStand and not ahDodgeLock[lockK] and not theirSwing and dodgeHold.cdOk() and iframeOk then
 						local fromP = lh.Root.Position
 						local to = Vector3.new(root.Position.X - fromP.X, 0, root.Position.Z - fromP.Z)
@@ -3360,7 +3367,7 @@ local function tryAttackHelper(lh, threat)
 							dodgeHold.once("DODGE_SKIP", lockK .. ":chase", string.format("chase gap=%.2f reach=%.2f ourLand=%.3f canBlockAt=%.3f skip", gap, reach, ourLand, canBlockAt), fakeD, lh)
 						end
 					elseif not inStand and not iframeOk then
-						dodgeHold.once("DODGE_SKIP", lockK .. ":chaseIframe", string.format("chase ourLand=%.3f < iframeLeft+0.04=%.3f", ourLand, iframeLeft + 0.04), fakeD, lh)
+						dodgeHold.once("DODGE_SKIP", lockK .. ":chaseIframe", string.format("chase ourLand=%.3f iframeLeft=%.3f canBlockAt=%.3f (need iframe and ourLand<=canBlockAt)", ourLand, iframeLeft, canBlockAt), fakeD, lh)
 					end
 					if not goingAway and not ahDodgeLock[lockK] then
 						local fromP = lh.Root.Position
@@ -3966,7 +3973,7 @@ bind(RunService.RenderStepped, function(dt)
 			pressed.rec = nil
 			pressed.from = nil
 			skipFollow = true
-		elseif not same and pressed.from ~= "ah" then
+		elseif not same then
 			skipFollow = true
 			pressed.kind = nil
 			pressed.rec = nil
@@ -4001,11 +4008,7 @@ bind(RunService.RenderStepped, function(dt)
 					local need = dodgeHold.cover(cover)
 					local elapsed = pressed.at and (now - pressed.at) or 0
 					if elapsed < need then
-						if cover <= DODGE_CHAIN then
-							ready = canQueueAttack(lh)
-						else
-							ready = false
-						end
+						ready = false
 					end
 				end
 			end
@@ -4226,8 +4229,7 @@ bind(RunService.RenderStepped, function(dt)
 			if Config.AutoDodge and not lh.IsDodging then
 				local dodged, ddir = dodgeAt(lh, threat.root.Position, jdist, true)
 				if dodged then
-						local jFollow = type(threat.cancelRemain) == "number" and (DODGE_CHAIN + dodgeHold.hit(lh)) <= threat.cancelRemain - 0.02
-						dodgeHold.arm(lh, threat, "jump", jFollow)
+						dodgeHold.arm(lh, threat, "jump", false)
 						dbg.dodge += 1
 						dbg._note("dodge")
 						lastDodgeAt = now
@@ -4312,7 +4314,7 @@ bind(RunService.RenderStepped, function(dt)
 			dbg.seen[threat.swing.uid .. ":plan"] = true
 			local hv = bestOfKind(lh, threat, "Heavy", true)
 			local lv = bestOfKind(lh, threat, "Light", true)
-			clog("BREAK_PLAN", string.format("kind=%s name=%s %s %s remain=%.3f esc=%s dist=%.2f facing=%s pressed=%s cur=%s canStart=%s", tostring(plan and plan.kind), tostring(plan and plan.rec and plan.rec.name), dodgeHold.whyFit(lh, threat, "Light01"), dodgeHold.whyFit(lh, threat, "Heavy01"), threat.remain, type(threat.cancelRemain) == "number" and string.format("%.3f", threat.cancelRemain) or "-", jumpDist, tostring(facing), tostring(pressed.kind), curActName(lh), tostring(canStartInterrupt(lh))), threat, lh)
+			clog("BREAK_PLAN", string.format("kind=%s name=%s %s %s %s remain=%.3f esc=%s dist=%.2f facing=%s pressed=%s cur=%s canStart=%s", tostring(plan and plan.kind), tostring(plan and plan.rec and plan.rec.name), dodgeHold.whyFit(lh, threat, "Light01"), dodgeHold.whyFit(lh, threat, "Heavy01"), dodgeHold.whyFit(lh, threat, "Heavy02"), threat.remain, type(threat.cancelRemain) == "number" and string.format("%.3f", threat.cancelRemain) or "-", jumpDist, tostring(facing), tostring(pressed.kind), curActName(lh), tostring(canStartInterrupt(lh))), threat, lh)
 		end
 		local waiting = false
 		local coverRemain = ((threat.impN or 1) > 1) and (threat.lastRemain or threat.remain) or threat.remain
@@ -4534,7 +4536,7 @@ bind(RunService.RenderStepped, function(dt)
 					end
 				end
 			end
-			local doParry = Config.AutoParry and combatOn and (not threat.windup) and threat.canParry and threat.remain <= parryLead and threat.remain >= parryMin and canDef and pressed.kind == nil
+			local doParry = Config.AutoParry and combatOn and (not threat.windup) and threat.canParry and threat.remain <= (jumpAtk and parryDur or parryLead) and threat.remain >= parryMin and canDef and pressed.kind == nil
 			local dodgeCover = ((threat.impN or 1) > 1) and (threat.lastRemain or threat.remain) or threat.remain
 			local dodgeDeclined = threat.swing and threat.swing.rolls and threat.swing.rolls.priDodge == false
 			if not dodgeDeclined then
@@ -4549,7 +4551,7 @@ bind(RunService.RenderStepped, function(dt)
 			if lockedSwing then
 				doParry = false
 			end
-			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and dodgeHold.ok(threat, threat.remain, dodgeHold.hit(lh))
+			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined
 			local doDodge = Config.AutoDodge and combatOn and (not threat.windup) and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and (not threat.canParry or threat.remain < 0.04 or not Config.AutoParry or jumpAtk) and canDef and not dodgeDeclined
 			if pressed.kind == "wait" or pressed.kind == "block" then
 			elseif canDodgeNow then
