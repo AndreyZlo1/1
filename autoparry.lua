@@ -103,6 +103,8 @@ local Config = {
 	AHBlockHold = 0.05,
 	AHWhiffGate = 0.45,
 	Defensive = "Auto",
+	LowDefensePosture = 0.7,
+	LowDefenseHp = 0.3,
 	StaffDetect = true,
 	CustomModel = false,
 	CustomModelMaterial = "Glass",
@@ -1775,7 +1777,7 @@ function dodgeHold.coverDir(lh, dest)
 end
 
 local function dodgeAt(lh, dest, dist, forceToward)
-	if dodgeHold.defNow then
+	if dodgeHold.defNow or dodgeHold.turtleNow or dodgeHold.ultHot then
 		return dodgeHold.coverDir(lh, dest)
 	end
 	if forceToward or (type(dist) == "number" and dist >= 8) then
@@ -2262,6 +2264,33 @@ function dodgeHold.cover(remain)
 	return DODGE_CHAIN
 end
 
+function dodgeHold.ultReady(model)
+	if not model then
+		return false
+	end
+	return (model:GetAttribute("UltimateEnergy") or 0) >= 100
+end
+
+function dodgeHold.turtle(lh)
+	if not lh or not lh.OriginalModel then
+		return false
+	end
+	local m = lh.OriginalModel
+	local po = m:GetAttribute("Posture") or 0
+	local mp = m:GetAttribute("MaxPosture") or 100
+	local hp = m:GetAttribute("Health") or 0
+	local mh = m:GetAttribute("MaxHealth") or 1
+	local pCut = Config.LowDefensePosture or 0
+	local hCut = Config.LowDefenseHp or 0
+	if pCut > 0 and mp > 0 and po / mp >= pCut then
+		return true
+	end
+	if hCut > 0 and mh > 0 and hp / mh <= hCut then
+		return true
+	end
+	return false
+end
+
 function dodgeHold.defensive(lh, theirW)
 	local mode = Config.Defensive
 	if mode == "On" then
@@ -2497,12 +2526,8 @@ local function bestOfKind(lh, threat, wantKind, needBreak)
 	if not pack then
 		return nil
 	end
-	local pad = 0
 	local atkName = tostring(threat.attack or "")
 	local isUlt = atkName == "Ultimate" or string.find(atkName, "Ultimate", 1, true)
-	if isUlt then
-		pad = 0.10
-	end
 	local slack = 0
 	local function fits(name)
 		if type(name) ~= "string" or name == "none" then
@@ -2515,7 +2540,7 @@ local function bestOfKind(lh, threat, wantKind, needBreak)
 		if not rec or rec.kind ~= wantKind then
 			return nil
 		end
-		if rec.hit + pad > (threat.remain or 0) + slack then
+		if rec.hit > (threat.remain or 0) + slack then
 			return nil
 		end
 		if type(threat.cancelRemain) == "number" and rec.hit > threat.cancelRemain + 0.02 then
@@ -2657,6 +2682,9 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 	local heavyRec = Config.BreakHeavy and bestOfKind(lh, threat, "Heavy", true)
 	local lightRec = Config.BreakLight and bestOfKind(lh, threat, "Light", true)
 	local function tryHeavy()
+		if dodgeHold.turtleNow then
+			return nil
+		end
 		if (threat.impN or 1) > 1 then
 			return nil
 		end
@@ -2674,6 +2702,9 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 		return nil
 	end
 	local function tryLight()
+		if dodgeHold.turtleNow then
+			return nil
+		end
 		if (threat.impN or 1) > 1 then
 			return nil
 		end
@@ -2691,11 +2722,14 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 			if chip and not dodgeHold.theirRange(lh, threat) and dodgeHold.chipOk(threat, chip) and jumpDist <= (chip.reach or 7) + 2.2 then
 				return take("light", chip, Config.BreakLightChance, Config.BreakLightAbs, "chain")
 			end
-			if not lightRec and not heavyRec and (threat.superArmor or 0) < 100 and not dodgeHold.defNow then
-				local w = equippedName(lh.OriginalModel)
-				local setup = packAttackRec(type(w) == "string" and catalog[w], "Light01")
-				if setup and setup.hit + 0.22 <= (threat.remain or 0) and inReach(setup) then
-					return take("light", setup, Config.BreakLightChance, Config.BreakLightAbs, "chain")
+			if not lightRec and not heavyRec and (threat.superArmor or 0) < 100 and not dodgeHold.defNow and not dodgeHold.turtleNow and not dodgeHold.ultHot then
+				local an = tostring(threat.attack or "")
+				if an ~= "Ultimate" and not string.find(an, "Ultimate", 1, true) then
+					local w = equippedName(lh.OriginalModel)
+					local setup = packAttackRec(type(w) == "string" and catalog[w], "Light01")
+					if setup and setup.hit + 0.22 <= (threat.remain or 0) and inReach(setup) then
+						return take("light", setup, Config.BreakLightChance, Config.BreakLightAbs, "chain")
+					end
 				end
 			end
 		end
@@ -2708,7 +2742,7 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 		if weStunned(lh) or lh.IsDodging then
 			return nil
 		end
-		if dodgeHold.defNow then
+		if dodgeHold.defNow or dodgeHold.turtleNow or dodgeHold.ultHot then
 			return nil
 		end
 		local am = lh.ActionManager
@@ -3069,7 +3103,13 @@ local function enemyLine(threat, lh)
 	end
 	local ow = equippedName(lh and lh.OriginalModel)
 	local tp = type(threat.weapon) == "string" and catalog[threat.weapon]
-	return string.format("enemy=%s uid=%s dist=%.2f ourW=%s theirW=%s atk=%s imp=%s/%s sa=%.0f t=%.3f last=%.3f tpos=%.3f will=%s dual=%s theirL=%.3f def=%s", plr and plr.Name or "?", tostring(uid), d, tostring(ow), tostring(threat.weapon), tostring(threat.attack), tostring(threat.impIndex or 1), tostring(threat.impN or 1), threat.superArmor or 0, threat.remain, threat.lastRemain or threat.remain, threat.tpos or 0, tostring(threat.will), tostring(tp and tp.dualImp), tp and tp.lightHit or 0, tostring(dodgeHold.defensive(lh, threat.weapon)))
+	local om = lh and lh.OriginalModel
+	local hp = om and (om:GetAttribute("Health") or 0) or 0
+	local mh = om and (om:GetAttribute("MaxHealth") or 1) or 1
+	local po = om and (om:GetAttribute("Posture") or 0) or 0
+	local mp = om and (om:GetAttribute("MaxPosture") or 100) or 100
+	local eu = threat.model and (threat.model:GetAttribute("UltimateEnergy") or 0) or 0
+	return string.format("enemy=%s uid=%s dist=%.2f ourW=%s theirW=%s atk=%s imp=%s/%s sa=%.0f t=%.3f last=%.3f tpos=%.3f will=%s dual=%s theirL=%.3f def=%s turtle=%s ourHp=%.0f/%.0f po=%.0f/%.0f theirUlt=%.0f", plr and plr.Name or "?", tostring(uid), d, tostring(ow), tostring(threat.weapon), tostring(threat.attack), tostring(threat.impIndex or 1), tostring(threat.impN or 1), threat.superArmor or 0, threat.remain, threat.lastRemain or threat.remain, threat.tpos or 0, tostring(threat.will), tostring(tp and tp.dualImp), tp and tp.lightHit or 0, tostring(dodgeHold.defensive(lh, threat.weapon)), tostring(dodgeHold.turtle(lh)), hp, mh, po, mp, eu)
 end
 
 local function ourHits(lh)
@@ -4055,6 +4095,8 @@ bind(RunService.RenderStepped, function(dt)
 	end
 	local threat = scanThreat(lh)
 	dodgeHold.defNow = threat and dodgeHold.defensive(lh, threat.weapon) or false
+	dodgeHold.turtleNow = dodgeHold.turtle(lh)
+	dodgeHold.ultHot = (threat and (tostring(threat.attack or "") == "Ultimate" or dodgeHold.ultReady(threat.model))) or false
 	local now = os.clock()
 	stepCosmetics(now, lh)
 	stepTrails(lh)
@@ -4431,7 +4473,7 @@ bind(RunService.RenderStepped, function(dt)
 		if pressed.kind == "chain" then
 			if coverRemain <= dodgeLead and threat.will and not weStunned(lh) and not lh.IsDodging and lh.ActionManager and lh.ActionManager:CanStartDodge() then
 				local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
-				local dodged, ddir = dodgeHold.go(lh, threat, threat.root.Position, jumpDist, recede, "chain", true)
+				local dodged, ddir = dodgeHold.go(lh, threat, threat.root.Position, jumpDist, recede, "chain", not dodgeHold.ultHot and not dodgeHold.turtleNow)
 				if dodged then
 					dbg.dodge += 1
 					dbg._note("dodge")
@@ -4654,7 +4696,7 @@ bind(RunService.RenderStepped, function(dt)
 			if lockedSwing then
 				doParry = false
 			end
-			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and not dbg._repeat("dodge") and not dodgeHold.defNow
+			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and not dbg._repeat("dodge") and not dodgeHold.defNow and not dodgeHold.turtleNow and not dodgeHold.ultHot
 			local doDodge = Config.AutoDodge and combatOn and (not threat.windup) and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and (not threat.canParry or threat.remain < 0.04 or not Config.AutoParry or jumpAtk) and canDef and not dodgeDeclined
 			if pressed.kind == "wait" or pressed.kind == "block" then
 			elseif canDodgeNow then
@@ -5499,25 +5541,38 @@ function genv._DGAP.buildUI(ctx)
 		Config.NoRepeatCounter = v
 	end, "If a dodge-attack counter was used too much, parry instead.")
 	apDelay:Header({ Name = "Defensive" })
-	apDelay:Button({
-		Name = "Def Auto",
-		Callback = function()
-			Config.Defensive = "Auto"
+	els.DG_Defensive = apDelay:Dropdown({
+		Name = "Mode",
+		Options = { "Auto", "On", "Off" },
+		Default = Config.Defensive or "Auto",
+		Callback = function(v)
+			Config.Defensive = v
+		end,
+	}, ctx.flag("DG_Defensive"))
+	disc(apDelay, "Auto: dual-imp weapon and their Light is faster. No dodge-into-them counters.")
+	slider(apDelay, {
+		Name = "Low Posture",
+		Flag = "DG_LowDefensePosture",
+		Default = Config.LowDefensePosture,
+		Min = 0,
+		Max = 1,
+		Precision = 2,
+		Callback = function(v)
+			Config.LowDefensePosture = v
 		end,
 	})
-	apDelay:Button({
-		Name = "Def On",
-		Callback = function()
-			Config.Defensive = "On"
+	slider(apDelay, {
+		Name = "Low HP",
+		Flag = "DG_LowDefenseHp",
+		Default = Config.LowDefenseHp,
+		Min = 0,
+		Max = 1,
+		Precision = 2,
+		Callback = function(v)
+			Config.LowDefenseHp = v
 		end,
 	})
-	apDelay:Button({
-		Name = "Def Off",
-		Callback = function()
-			Config.Defensive = "Off"
-		end,
-	})
-	disc(apDelay, "Auto: dual-imp weapon and their Light is faster than ours. No dodge-into-them counters. Parry dual hits.")
+	disc(apDelay, "Posture/Max >= Low Posture or HP/Max <= Low HP: full defense, no counters.")
 
 	local apPlay = AutoParry:Section({ Side = "Right" })
 	apPlay:Header({ Name = "AutoPlay" })
