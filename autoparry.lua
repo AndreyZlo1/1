@@ -103,8 +103,7 @@ local Config = {
 	AHBlockHold = 0.05,
 	AHWhiffGate = 0.45,
 	Defensive = "Auto",
-	LowDefensePosture = 0.7,
-	LowDefenseHp = 0.3,
+	LowDefensePosture = 50,
 	StaffDetect = true,
 	CustomModel = false,
 	CustomModelMaterial = "Glass",
@@ -2278,17 +2277,11 @@ function dodgeHold.turtle(lh)
 	local m = lh.OriginalModel
 	local po = m:GetAttribute("Posture") or 0
 	local mp = m:GetAttribute("MaxPosture") or 100
-	local hp = m:GetAttribute("Health") or 0
-	local mh = m:GetAttribute("MaxHealth") or 1
-	local pCut = Config.LowDefensePosture or 0
-	local hCut = Config.LowDefenseHp or 0
-	if pCut > 0 and mp > 0 and po / mp >= pCut then
-		return true
+	local cut = Config.LowDefensePosture or 0
+	if cut <= 0 or mp <= 0 then
+		return false
 	end
-	if hCut > 0 and mh > 0 and hp / mh <= hCut then
-		return true
-	end
-	return false
+	return (po / mp) * 100 <= cut
 end
 
 function dodgeHold.defensive(lh, theirW)
@@ -3270,16 +3263,16 @@ local function tryAttackHelper(lh, threat)
 	end
 
 	local function fire(name, tag, model, root, remain, predPos, fromPos, skipDelay)
-		if tag ~= "BLOCKPUNISH" and tag ~= "DODGEHIT" and not attackHits(lh, name, root, model, predPos, fromPos) then
+		if tag ~= "BLOCKPUNISH" and tag ~= "BLOCKREC" and tag ~= "DODGEHIT" and not attackHits(lh, name, root, model, predPos, fromPos) then
 			return false
 		end
-		if tag == "BLOCKPUNISH" then
+		if tag == "BLOCKPUNISH" or tag == "BLOCKREC" then
 			dodgeHold.ahAt = nil
 			dodgeHold.ahPend = nil
 		elseif dodgeHold.ahAt and now < dodgeHold.ahAt and not skipDelay then
 			return false
 		end
-		if tag ~= "BLOCKPUNISH" and tag ~= "DODGEHIT" and not dodgeHold.ahGate() then
+		if tag ~= "BLOCKPUNISH" and tag ~= "BLOCKREC" and tag ~= "DODGEHIT" and not dodgeHold.ahGate() then
 			return false
 		end
 		if not skipDelay then
@@ -3586,7 +3579,7 @@ local function tryAttackHelper(lh, threat)
 						blockSince[model] = now
 						dodgeHold.parryWatch = dodgeHold.parryWatch or {}
 						dodgeHold.parryWatch[model] = now + 0.7
-						clog("AH_BLOCK_SEEN", string.format("parryWin d=%.2f age=%.3f ourHit=%.3f left=%.3f delay=%.3f ping=%.3f hold=0 pressed=%s", dist2d(lh.Root.Position, root.Position), blockAge or 0, hitT("Light01"), math.max(0, 0.233 - (blockAge or 0)), math.max(0, math.max(0, 0.233 - (blockAge or 0)) - hitT("Light01") + pingPad()), pingPad(), tostring(pressed.kind)), {
+						clog("AH_BLOCK_SEEN", string.format("parryWin d=%.2f age=%.3f ourHit=%.3f left=%.3f retapCover=%.3f cd=0 ping=%.3f hold=0 pressed=%s", dist2d(lh.Root.Position, root.Position), blockAge or 0, hitT("Light01"), math.max(0, 0.233 - (blockAge or 0)), (blockAge or 0) + 0.466, pingPad(), tostring(pressed.kind)), {
 							weapon = equippedName(model),
 							attack = "BLOCK",
 							remain = 0.233,
@@ -3617,52 +3610,46 @@ local function tryAttackHelper(lh, threat)
 				local travel = dodgeTravel(lh)
 				local vel = enemyVel(model, root)
 				local recede = recedingFrom(lh, root, vel)
-				if Config.AHPunishBlock and blocking and not blockPunished[model] then
-						local replicaAge = blockAge or 0
-						local standL = "Light01"
-						local ourHit = hitT(standL)
-						local left = math.max(0, 0.233 - replicaAge)
-						local delay = math.max(0, left - ourHit + pingPad())
-						local locked = dodgeHold.parryLock and dodgeHold.parryLock[model] and now < dodgeHold.parryLock[model]
+				if Config.AHPunishBlock and not blockPunished[model] then
+					local replicaAge = blockAge or 0
+					local standL = "Light01"
+					local ourHit = hitT(standL)
+					local locked = dodgeHold.parryLock and dodgeHold.parryLock[model] and now < dodgeHold.parryLock[model]
 					if not locked and dodgeHold.parryLock and handler and handler.OriginalModel then
 						locked = dodgeHold.parryLock[handler.OriginalModel] and now < dodgeHold.parryLock[handler.OriginalModel]
 					end
-						local inStand = attackHits(lh, standL, root, model) or d <= ourReach(lh, standL) + 1.4
-						local fakeB = {
-							weapon = equippedName(model),
-							attack = "BLOCK",
-							remain = 0.233,
-							tpos = replicaAge,
-							will = false,
-							superArmor = 0,
-							model = model,
-							root = root,
-							impIndex = 1,
-							impN = 1,
-						}
-						if locked then
-							dodgeHold.once("PUNISH_SKIP", model, string.format("parryLock hold=%.3f age=%.3f", holdT, replicaAge), fakeB, lh)
-						elseif inStand then
-							if holdT < delay then
-								dodgeHold.once("PUNISH_WAIT", model, string.format("hold=%.3f < delay=%.3f left=%.3f ourHit=%.3f ping=%.3f", holdT, delay, left, ourHit, pingPad()), fakeB, lh)
-							elseif not canQueueAttack(lh) then
-								dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":q", "canQueue=false " .. curActName(lh), fakeB, lh)
-							end
+					local inStand = attackHits(lh, standL, root, model) or d <= ourReach(lh, standL) + 1.4
+					local fakeB = {
+						weapon = equippedName(model),
+						attack = "BLOCK",
+						remain = 0.233,
+						tpos = replicaAge,
+						will = false,
+						superArmor = 0,
+						model = model,
+						root = root,
+						impIndex = 1,
+						impN = 1,
+					}
+					if swinging or jumping or (threat and threat.will and threat.model == model and not threat.windup) then
+						dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":swing", string.format("block+swing no punish jump=%s swing=%s sa=%.0f atk=%s", tostring(jumping), tostring(swinging), (threat and threat.model == model and threat.superArmor) or 0, tostring(threat and threat.model == model and threat.attack)), fakeB, lh)
+					elseif locked then
+						dodgeHold.once("PUNISH_SKIP", model, string.format("parryLock hold=%.3f age=%.3f", holdT, replicaAge), fakeB, lh)
+					elseif blocking then
+						if replicaAge < 0.233 then
+							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":parry", string.format("stillParry age=%.3f left=%.3f ourHit=%.3f retapCover=%.3f cd=0", replicaAge, math.max(0, 0.233 - replicaAge), ourHit, replicaAge + 0.466), fakeB, lh)
 						else
+							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":hold", string.format("holding age=%.3f (IsParrying=false Light=Block)", replicaAge), fakeB, lh)
+						end
+					elseif blockPunishUntil[model] and now < blockPunishUntil[model] then
+						if not inStand then
 							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":range", string.format("no standing d=%.2f reach=%.2f (no dashatk on parry)", d, ourReach(lh, standL)), fakeB, lh)
+						elseif not canQueueAttack(lh) then
+							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":q", "canQueue=false " .. curActName(lh), fakeB, lh)
+						elseif fire(standL, "BLOCKREC", model, root, blockPunishUntil[model] - now, nil, nil, true) then
+							blockPunished[model] = true
+							return true
 						end
-						if swinging or jumping or (threat and threat.will and threat.model == model and not threat.windup) then
-							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":swing", string.format("block+swing no punish jump=%s swing=%s sa=%.0f atk=%s", tostring(jumping), tostring(swinging), (threat and threat.model == model and threat.superArmor) or 0, tostring(threat and threat.model == model and threat.attack)), fakeB, lh)
-						elseif locked then
-						elseif inStand then
-							if holdT >= delay and canQueueAttack(lh) and fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
-								blockPunished[model] = true
-								return true
-							end
-						end
-						if blockPunishUntil[model] and now < blockPunishUntil[model] and not swinging and not jumping then
-					if not dodgeHold.parryAt(0, hitT(nextL)) and fire(nextL, "BLOCKREC", model, root, blockPunishUntil[model] - now) then
-						return true
 					end
 				end
 				if Config.AHPunishWhiff and recovering and (now - lastAH) > (Config.AHWhiffGate or 0.45) and (now - lastDodgeAt) > 0.5 and (now - lastTakenAt) > 0.65 then
@@ -3672,7 +3659,6 @@ local function tryAttackHelper(lh, threat)
 				end
 			end
 		end
-	end
 	end
 	return false
 end
@@ -5540,8 +5526,10 @@ function genv._DGAP.buildUI(ctx)
 	end, function(v)
 		Config.NoRepeatCounter = v
 	end, "If a dodge-attack counter was used too much, parry instead.")
-	apDelay:Header({ Name = "Defensive" })
-	els.DG_Defensive = apDelay:Dropdown({
+
+	local apDef = AutoParry:Section({ Side = "Left" })
+	apDef:Header({ Name = "Defensive" })
+	els.DG_Defensive = apDef:Dropdown({
 		Name = "Mode",
 		Options = { "Auto", "On", "Off" },
 		Default = Config.Defensive or "Auto",
@@ -5549,30 +5537,20 @@ function genv._DGAP.buildUI(ctx)
 			Config.Defensive = v
 		end,
 	}, ctx.flag("DG_Defensive"))
-	disc(apDelay, "Auto: dual-imp weapon and their Light is faster. No dodge-into-them counters.")
-	slider(apDelay, {
+	disc(apDef, "Auto: dual-imp weapon and their Light is faster. No dodge-into-them counters.")
+	slider(apDef, {
 		Name = "Low Posture",
 		Flag = "DG_LowDefensePosture",
 		Default = Config.LowDefensePosture,
 		Min = 0,
-		Max = 1,
-		Precision = 2,
+		Max = 100,
+		Precision = 0,
+		Suffix = "%",
 		Callback = function(v)
 			Config.LowDefensePosture = v
 		end,
 	})
-	slider(apDelay, {
-		Name = "Low HP",
-		Flag = "DG_LowDefenseHp",
-		Default = Config.LowDefenseHp,
-		Min = 0,
-		Max = 1,
-		Precision = 2,
-		Callback = function(v)
-			Config.LowDefenseHp = v
-		end,
-	})
-	disc(apDelay, "Posture/Max >= Low Posture or HP/Max <= Low HP: full defense, no counters.")
+	disc(apDef, "Full defense (parry/dodge only, no counters) when remaining posture is this % or lower. 0 = off.")
 
 	local apPlay = AutoParry:Section({ Side = "Right" })
 	apPlay:Header({ Name = "AutoPlay" })
