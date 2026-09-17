@@ -40,8 +40,8 @@ local Config = {
 	IntentionalBlock = false,
 	IntentionalBlockChance = 0,
 	HumanDelay = false,
-	HumanDelayMin = 0,
-	HumanDelayMax = 0,
+	HumanDelayMin = 0.016,
+	HumanDelayMax = 0.045,
 	NoRepeat = false,
 	NoRepeatCounter = false,
 	EspStyle = "Soul",
@@ -2195,8 +2195,17 @@ function dodgeHold.ahGate()
 	if ch >= 0.999 then
 		return true
 	end
+	if ch <= 0 then
+		return false
+	end
+	local now = os.clock()
+	if type(dodgeHold._ahUntil) == "number" and now < dodgeHold._ahUntil then
+		return dodgeHold._ahOk == true
+	end
 	local r = rng:NextNumber()
 	local ok = r <= ch
+	dodgeHold._ahOk = ok
+	dodgeHold._ahUntil = now + math.max(0.28, Config.AHCooldown or 0.18)
 	if dodgeHold.chLog then
 		dodgeHold.chLog("AHChance", ch, ok, nil, r)
 	end
@@ -2215,15 +2224,7 @@ function dodgeHold.ahHd(remain, needRemain)
 	if hi < lo then
 		hi = lo
 	end
-	local slack = math.max(0, (remain or 0) - (needRemain or 0.03) - 0.01)
-	if slack <= 0.004 then
-		return 0
-	end
-	local d = lo + rng:NextNumber() * (hi - lo)
-	if d > slack then
-		d = slack * (0.4 + rng:NextNumber() * 0.45)
-	end
-	return d
+	return lo + rng:NextNumber() * (hi - lo)
 end
 
 function dodgeHold.parryAt(blockAge, ourHit)
@@ -3003,15 +3004,7 @@ dbg._hd = function(remain, needRemain)
 	if hi < lo then
 		hi = lo
 	end
-	local slack = math.max(0, (remain or 0) - (needRemain or 0.03) - 0.01)
-	if slack <= 0.004 then
-		return 0
-	end
-	local d = lo + rng:NextNumber() * (hi - lo)
-	if d > slack then
-		d = slack * (0.4 + rng:NextNumber() * 0.45)
-	end
-	return d
+	return lo + rng:NextNumber() * (hi - lo)
 end
 
 dbg._note = function(kind)
@@ -3678,7 +3671,7 @@ local function dumpDebug()
 		string.format("willHit=%d acted=%d (parry=%d dodge=%d interrupt=%d ah=%d) chip=%d skip=%d taken=%d enemyParry=%d enemyBlock=%d", dbg.will, acted, dbg.parry, dbg.dodge, dbg.interrupt, dbg.helper, dbg.chip, dbg.skip, dbg.taken, dbg.enemyParry, dbg.enemyBlock),
 		string.format("acted_rate=%.1f%%  clean_rate=%.1f%% (1 - taken/willHit)", acc, clean),
 		string.format("pressed=%s lastDodge=%.2fs Light01/Heavy01 from last threat in events", tostring(pressed.kind), lastDodgeAt > 0 and (os.clock() - lastDodgeAt) or -1),
-		string.format("chances Parry=%.2f Dodge=%.2f AH=%.2f BreakDodge=%.2f NoRepeat=%s AHHumanDelay=%s", Config.ParryChance or 0, Config.DodgeChance or 0, Config.AHChance or 0, Config.BreakDodgeChance or 0, tostring(Config.NoRepeat), tostring(Config.AHHumanDelay)),
+		string.format("chances Parry=%.2f Dodge=%.2f AH=%.2f BreakDodge=%.2f NoRepeat=%s HumanDelay=%s (%.3f-%.3f) AHHumanDelay=%s", Config.ParryChance or 0, Config.DodgeChance or 0, Config.AHChance or 0, Config.BreakDodgeChance or 0, tostring(Config.NoRepeat), tostring(Config.HumanDelay), Config.HumanDelayMin or 0, Config.HumanDelayMax or 0, tostring(Config.AHHumanDelay)),
 		"----",
 	}
 	for _, e in dbg.events do
@@ -4754,17 +4747,8 @@ bind(RunService.RenderStepped, function(dt)
 						end
 					end
 				else
-					if Config.AutoDodge and combatOn and dodgeCover <= dodgeLead and threat.remain >= 0.018 then
-						local recede = recedingFrom(lh, threat.root, enemyVel(threat.model, threat.root))
-						local dodged, ddir = dodgeHold.go(lh, threat, threat.root.Position, jumpDist, recede, "parry-skip", true)
-						if dodged then
-							dbg.dodge += 1 dbg._note("dodge")
-							clog("DASHATK", string.format("parry-skip remain=%.3f dir=%s follow=%s escape=%s", threat.remain, ddir, pressed.rec and "yes" or "no", type(pressed.escapeRemain) == "number" and string.format("%.3f", pressed.escapeRemain) or "-"), threat, lh)
-						end
-					else
-						dbg.skip += 1
-						clog("PARRY_SKIP", string.format("chance miss ParryChance=%.2f DodgeChance=%.2f remain=%.3f", Config.ParryChance or 0, Config.DodgeChance or 0, threat.remain), threat, lh)
-					end
+					dbg.skip += 1
+					clog("PARRY_SKIP", string.format("chance miss ParryChance=%.2f DodgeChance=%.2f remain=%.3f", Config.ParryChance or 0, Config.DodgeChance or 0, threat.remain), threat, lh)
 				end
 			elseif (not doParry) and doDodge and pressed.kind ~= "dodge" then
 				local delay = dbg._hd(threat.remain, 0.03)
@@ -5447,7 +5431,7 @@ function genv._DGAP.buildUI(ctx)
 
 	local apChance = AutoParry:Section({ Side = "Left" })
 	apChance:Header({ Name = "Chances" })
-	disc(apChance, "How often each option is used. Commit = follow through after pick.")
+	disc(apChance, "Miss = eat the hit. No dodge backup on parry miss, no per-frame reroll.")
 	slider(apChance, {
 		Name = "Dodge Chance",
 		Flag = "DG_DodgeChance",
