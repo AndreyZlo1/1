@@ -2221,8 +2221,14 @@ function dodgeHold.arm(lh, threat, from, wantFollow)
 	pressed.coverRemain = threat and threat.remain or 0
 	pressed.escapeRemain = threat and threat.cancelRemain
 	pressed.dashHit = dodgeHold.hit(lh)
-	if wantFollow and dodgeHold.ok(threat, pressed.coverRemain, pressed.dashHit) then
-		pressed.rec = { name = "DashLight", kind = "Light" }
+	if wantFollow then
+		if threat and (threat.attack == "JumpAttack" or (threat.superArmor or 0) >= 100) then
+			pressed.rec = { name = "DashLight", kind = "Light" }
+		elseif dodgeHold.ok(threat, pressed.coverRemain, pressed.dashHit) then
+			pressed.rec = { name = "DashLight", kind = "Light" }
+		else
+			pressed.rec = nil
+		end
 	else
 		pressed.rec = nil
 	end
@@ -2642,7 +2648,8 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 		for _, step in order do
 			if type(step) == "string" then
 				local key = step == "Dodge+Attack" and "dodge" or string.lower(step)
-				if allowRepeat or not dbg._repeat(key) then
+				local mustHeavy = key == "heavy" and heavyRec and not lightRec
+				if allowRepeat or not dbg._repeat(key) or mustHeavy then
 					local p
 					if step == "Heavy" then
 						p = tryHeavy()
@@ -3280,73 +3287,82 @@ local function tryAttackHelper(lh, threat)
 						impN = 1,
 					}
 					dodgeHold.once("DODGE_SEE", lockK, string.format("age=%.3f iframeLeft=%.3f ourHit=%.3f landAt=%.3f minLand=%.3f maxLand=%.3f isRev=%s goingAway=%s d=%.2f reach=%.2f theirSwing=%s pressed=%s", dodgeAge, iframeLeft, ourHit, landAt, DODGE_IFRAME + 0.02, 0.466 + ping, tostring(isRev), tostring(goingAway), d, ourReach(lh, standName), tostring(theirSwing), tostring(pressed.kind)), fakeD, lh)
+					local standReach = ourReach(lh, standName)
+					local inStand = (not goingAway) and d <= standReach + 0.2
 					if landAt < DODGE_IFRAME + 0.04 then
 						dodgeHold.once("DODGE_SKIP", lockK .. ":early", string.format("EARLY iframe landAt=%.3f < %.3f (age=%.3f + hit=%.3f) wait", landAt, DODGE_IFRAME + 0.04, dodgeAge, ourHit), fakeD, lh)
 					elseif landAt > 0.466 + ping then
 						dodgeHold.once("DODGE_SKIP", lockK .. ":late", string.format("LATE they can parry landAt=%.3f > 0.466+ping=%.3f", landAt, 0.466 + ping), fakeD, lh)
 					elseif goingAway then
-						dodgeHold.once("DODGE_SKIP", lockK .. ":away", string.format("BACK/AWAY no standing d=%.2f reach=%.2f isRev=%s -> chase dashatk", d, ourReach(lh, standName), tostring(isRev)), fakeD, lh)
-					elseif not (attackHits(lh, standName, root, model) or d <= ourReach(lh, standName) + 0.2) then
-						dodgeHold.once("DODGE_SKIP", lockK .. ":range", string.format("NO REACH d=%.2f reach=%.2f", d, ourReach(lh, standName)), fakeD, lh)
+						dodgeHold.once("DODGE_SKIP", lockK .. ":away", string.format("BACK/AWAY no standing d=%.2f reach=%.2f isRev=%s -> chase dashatk", d, standReach, tostring(isRev)), fakeD, lh)
+					elseif not inStand then
+						dodgeHold.once("DODGE_SKIP", lockK .. ":range", string.format("NO REACH d=%.2f reach=%.2f -> chase dashatk", d, standReach), fakeD, lh)
 					end
-					if not ahDodgeLock[lockK] and not theirSwing and not goingAway then
+					if inStand and not ahDodgeLock[lockK] and not theirSwing then
 						if dodgeHold.parryLock then
 							dodgeHold.parryLock[model] = nil
 						end
 						if landAt >= DODGE_IFRAME + 0.04 and landAt <= 0.466 + ping then
-							if attackHits(lh, standName, root, model) or d <= ourReach(lh, standName) + 0.2 then
-								if fire(standName, "DODGEHIT", model, root, iframeLeft, nil, nil, true) then
-									ahDodgeLock[lockK] = true
-									return true
-								end
+							if fire(standName, "DODGEHIT", model, root, iframeLeft, nil, nil, true) then
+								ahDodgeLock[lockK] = true
+								return true
 							end
 						end
 					end
-					if goingAway and not ahDodgeLock[lockK] and not theirSwing then
+					local dashHit = impactT("DashLight")
+					local ourLand = DODGE_CHAIN + dashHit
+					local canBlockAt = 0.466 - dodgeAge
+					local iframeOk = ourLand >= iframeLeft + 0.04
+					if not inStand and not ahDodgeLock[lockK] and not theirSwing and dodgeHold.cdOk() and iframeOk then
 						local fromP = lh.Root.Position
 						local to = Vector3.new(root.Position.X - fromP.X, 0, root.Position.Z - fromP.Z)
 						local away = to.Magnitude > 0.1 and to.Unit or Vector3.new(0, 0, -1)
-						local dashHit = impactT("DashLight")
-						local dashLand = dodgeAge + DODGE_CHAIN + dashHit
-						if dodgeHold.cdOk() and dashLand >= DODGE_IFRAME + 0.04 then
-							local ourSlide = dodgeSlideDist(DODGE_CHAIN, ourDd)
-							local theirSlide = dodgeSlideDist(math.min(0.466 - dodgeAge, DODGE_CHAIN + dashHit), theirDd)
-							local predUs = fromP + (-away) * ourSlide
-							local predThem = root.Position + away * theirSlide
-							local reach = ourReach(lh, "DashLight")
-							local gap = dist2d(predUs, predThem)
-							if attackHits(lh, "DashLight", root, model, predThem, predUs) or gap <= reach + 0.5 then
-								if dodgeToward(lh, root.Position) then
-									ahDodgeLock[lockK] = true
-									lastAH = now
-									pressed.kind = "dashatk"
-									pressed.from = "ah"
-									pressed.at = now
-									pressed.key = lockK
-									pressed.untilTime = now + 0.55
-									pressed.rec = { name = "DashLight", kind = "Light" }
-									pressed.enemyRoot = root
-									pressed.enemyModel = model
-									dbg.helper += 1
-									clog("AH_BACKDODGE", string.format("iframe=%.3f d=%.2f dashHit=%.3f dashLand=%.3f gap=%.2f age=%.3f", iframeLeft, d, dashHit, dashLand, gap, dodgeAge), {
-														weapon = equippedName(model),
-														attack = "BACKDODGE",
-														remain = iframeLeft,
-														tpos = dodgeAge,
-														will = false,
-														superArmor = 0,
-														model = model,
-														root = root,
-														impIndex = 1,
-														impN = 1,
-														}, lh)
-													return true
-												end
-											else
-												dodgeHold.once("DODGE_SKIP", lockK .. ":chase", string.format("chase gap=%.2f reach=%.2f dashLand=%.3f skip no standing", gap, reach, dashLand), fakeD, lh)
-											end
+						local ourSlide = dodgeSlideDist(math.min(0.466, ourLand), ourDd)
+						local theirSlide = dodgeSlideDist(math.max(0, math.min(0.466 - dodgeAge, ourLand)), theirDd)
+						local predUs = fromP + away * ourSlide
+						local predThem
+						if goingAway or isRev then
+							predThem = root.Position + away * theirSlide
+						else
+							predThem = root.Position - away * theirSlide
 						end
-					elseif not goingAway and not ahDodgeLock[lockK] then
+						local reach = ourReach(lh, "DashLight")
+						local gap = dist2d(predUs, predThem)
+						dodgeHold.once("DODGE_CHASE", lockK, string.format("d=%.2f ourSlide=%.1f theirSlide=%.1f gap=%.2f reach=%.2f ourLand=%.3f iframeLeft=%.3f canBlockAt=%.3f isRev=%s", d, ourSlide, theirSlide, gap, reach, ourLand, iframeLeft, canBlockAt, tostring(isRev)), fakeD, lh)
+						if gap <= reach + 0.5 then
+							if dodgeToward(lh, root.Position) then
+								ahDodgeLock[lockK] = true
+								lastAH = now
+								pressed.kind = "dashatk"
+								pressed.from = "ah"
+								pressed.at = now
+								pressed.key = lockK
+								pressed.untilTime = now + 0.55
+								pressed.rec = { name = "DashLight", kind = "Light" }
+								pressed.enemyRoot = root
+								pressed.enemyModel = model
+								dbg.helper += 1
+								clog("AH_BACKDODGE", string.format("iframe=%.3f d=%.2f dashHit=%.3f ourLand=%.3f gap=%.2f age=%.3f canBlockAt=%.3f", iframeLeft, d, dashHit, ourLand, gap, dodgeAge, canBlockAt), {
+									weapon = equippedName(model),
+									attack = "BACKDODGE",
+									remain = iframeLeft,
+									tpos = dodgeAge,
+									will = false,
+									superArmor = 0,
+									model = model,
+									root = root,
+									impIndex = 1,
+									impN = 1,
+								}, lh)
+								return true
+							end
+						else
+							dodgeHold.once("DODGE_SKIP", lockK .. ":chase", string.format("chase gap=%.2f reach=%.2f ourLand=%.3f canBlockAt=%.3f skip", gap, reach, ourLand, canBlockAt), fakeD, lh)
+						end
+					elseif not inStand and not iframeOk then
+						dodgeHold.once("DODGE_SKIP", lockK .. ":chaseIframe", string.format("chase ourLand=%.3f < iframeLeft+0.04=%.3f", ourLand, iframeLeft + 0.04), fakeD, lh)
+					end
+					if not goingAway and not ahDodgeLock[lockK] then
 						local fromP = lh.Root.Position
 						local to = Vector3.new(root.Position.X - fromP.X, 0, root.Position.Z - fromP.Z)
 						local inDir = to.Magnitude > 0.1 and -to.Unit or Vector3.new(0, 0, -1)
@@ -4210,7 +4226,8 @@ bind(RunService.RenderStepped, function(dt)
 			if Config.AutoDodge and not lh.IsDodging then
 				local dodged, ddir = dodgeAt(lh, threat.root.Position, jdist, true)
 				if dodged then
-						dodgeHold.arm(lh, threat, "jump", false)
+						local jFollow = type(threat.cancelRemain) == "number" and (DODGE_CHAIN + dodgeHold.hit(lh)) <= threat.cancelRemain - 0.02
+						dodgeHold.arm(lh, threat, "jump", jFollow)
 						dbg.dodge += 1
 						dbg._note("dodge")
 						lastDodgeAt = now
