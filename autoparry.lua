@@ -102,6 +102,7 @@ local Config = {
 	AHCooldown = 0.18,
 	AHBlockHold = 0.05,
 	AHWhiffGate = 0.45,
+	Defensive = "Auto",
 	StaffDetect = true,
 	CustomModel = false,
 	CustomModelMaterial = "Glass",
@@ -380,6 +381,22 @@ local function ingestInfo(info)
 						animIndex[entry.animId] = list
 					end
 					list[#list + 1] = entry
+				end
+			end
+		end
+	end
+	pack.dualImp = false
+	pack.lightHit = 9
+	for aname, entry in pack.attacks do
+		if entry.impacts and #entry.impacts >= 2 then
+			pack.dualImp = true
+		end
+		if type(aname) == "string" and string.find(aname, "Light", 1, true) and not string.find(aname, "Dash", 1, true) then
+			local imp0 = entry.impacts and entry.impacts[1]
+			if imp0 then
+				local h = (imp0.markerTime or 0.25) / math.max(entry.speed or 1, 0.5)
+				if h < pack.lightHit then
+					pack.lightHit = h
 				end
 			end
 		end
@@ -1758,6 +1775,9 @@ function dodgeHold.coverDir(lh, dest)
 end
 
 local function dodgeAt(lh, dest, dist, forceToward)
+	if dodgeHold.defNow then
+		return dodgeHold.coverDir(lh, dest)
+	end
 	if forceToward or (type(dist) == "number" and dist >= 8) then
 		return dodgeToward(lh, dest), "fwd"
 	end
@@ -2242,6 +2262,23 @@ function dodgeHold.cover(remain)
 	return DODGE_CHAIN
 end
 
+function dodgeHold.defensive(lh, theirW)
+	local mode = Config.Defensive
+	if mode == "On" then
+		return true
+	end
+	if mode == "Off" then
+		return false
+	end
+	local tp = type(theirW) == "string" and catalog[theirW]
+	local ow = equippedName(lh and lh.OriginalModel)
+	local op = type(ow) == "string" and catalog[ow]
+	if not tp or not op then
+		return false
+	end
+	return tp.dualImp == true and (tp.lightHit or 9) + 0.001 < (op.lightHit or 9)
+end
+
 function dodgeHold.ok(threat, coverRemain, dashHit)
 	if not threat then
 		return true
@@ -2620,6 +2657,9 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 	local heavyRec = Config.BreakHeavy and bestOfKind(lh, threat, "Heavy", true)
 	local lightRec = Config.BreakLight and bestOfKind(lh, threat, "Light", true)
 	local function tryHeavy()
+		if (threat.impN or 1) > 1 then
+			return nil
+		end
 		if Config.BreakHeavy and canStartInterrupt(lh) then
 			if heavyRec and inReach(heavyRec) and not dodgeHold.unsafeSwing(lh, threat, heavyRec) then
 				return take("heavy", heavyRec, Config.BreakHeavyChance, Config.BreakHeavyAbs, "interrupt")
@@ -2634,6 +2674,9 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 		return nil
 	end
 	local function tryLight()
+		if (threat.impN or 1) > 1 then
+			return nil
+		end
 		if Config.BreakLight and canStartInterrupt(lh) then
 			if lightRec and inReach(lightRec) and not dodgeHold.unsafeSwing(lh, threat, lightRec) then
 				return take("light", lightRec, Config.BreakLightChance, Config.BreakLightAbs, "interrupt")
@@ -2648,6 +2691,13 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 			if chip and not dodgeHold.theirRange(lh, threat) and dodgeHold.chipOk(threat, chip) and jumpDist <= (chip.reach or 7) + 2.2 then
 				return take("light", chip, Config.BreakLightChance, Config.BreakLightAbs, "chain")
 			end
+			if not lightRec and not heavyRec and (threat.superArmor or 0) < 100 and not dodgeHold.defNow then
+				local w = equippedName(lh.OriginalModel)
+				local setup = packAttackRec(type(w) == "string" and catalog[w], "Light01")
+				if setup and setup.hit + 0.22 <= (threat.remain or 0) and inReach(setup) then
+					return take("light", setup, Config.BreakLightChance, Config.BreakLightAbs, "chain")
+				end
+			end
 		end
 		return nil
 	end
@@ -2656,6 +2706,9 @@ local function planBreak(lh, threat, facing, jumpReady, jumpHit, jumpDist, jumpR
 			return nil
 		end
 		if weStunned(lh) or lh.IsDodging then
+			return nil
+		end
+		if dodgeHold.defNow then
 			return nil
 		end
 		local am = lh.ActionManager
@@ -3015,7 +3068,8 @@ local function enemyLine(threat, lh)
 		d = dist2d(lh.Root.Position, threat.root.Position)
 	end
 	local ow = equippedName(lh and lh.OriginalModel)
-	return string.format("enemy=%s uid=%s dist=%.2f ourW=%s theirW=%s atk=%s imp=%s/%s sa=%.0f t=%.3f last=%.3f tpos=%.3f will=%s", plr and plr.Name or "?", tostring(uid), d, tostring(ow), tostring(threat.weapon), tostring(threat.attack), tostring(threat.impIndex or 1), tostring(threat.impN or 1), threat.superArmor or 0, threat.remain, threat.lastRemain or threat.remain, threat.tpos or 0, tostring(threat.will))
+	local tp = type(threat.weapon) == "string" and catalog[threat.weapon]
+	return string.format("enemy=%s uid=%s dist=%.2f ourW=%s theirW=%s atk=%s imp=%s/%s sa=%.0f t=%.3f last=%.3f tpos=%.3f will=%s dual=%s theirL=%.3f def=%s", plr and plr.Name or "?", tostring(uid), d, tostring(ow), tostring(threat.weapon), tostring(threat.attack), tostring(threat.impIndex or 1), tostring(threat.impN or 1), threat.superArmor or 0, threat.remain, threat.lastRemain or threat.remain, threat.tpos or 0, tostring(threat.will), tostring(tp and tp.dualImp), tp and tp.lightHit or 0, tostring(dodgeHold.defensive(lh, threat.weapon)))
 end
 
 local function ourHits(lh)
@@ -4000,6 +4054,7 @@ bind(RunService.RenderStepped, function(dt)
 		bind(lh.Parried, playParrySound)
 	end
 	local threat = scanThreat(lh)
+	dodgeHold.defNow = threat and dodgeHold.defensive(lh, threat.weapon) or false
 	local now = os.clock()
 	stepCosmetics(now, lh)
 	stepTrails(lh)
@@ -4362,7 +4417,7 @@ bind(RunService.RenderStepped, function(dt)
 			dbg.seen[threat.swing.uid .. ":plan"] = true
 			local hv = bestOfKind(lh, threat, "Heavy", true)
 			local lv = bestOfKind(lh, threat, "Light", true)
-			clog("BREAK_PLAN", string.format("kind=%s name=%s %s %s %s remain=%.3f esc=%s dist=%.2f facing=%s pressed=%s cur=%s canStart=%s", tostring(plan and plan.kind), tostring(plan and plan.rec and plan.rec.name), dodgeHold.whyFit(lh, threat, "Light01"), dodgeHold.whyFit(lh, threat, "Heavy01"), dodgeHold.whyFit(lh, threat, "Heavy02"), threat.remain, type(threat.cancelRemain) == "number" and string.format("%.3f", threat.cancelRemain) or "-", jumpDist, tostring(facing), tostring(pressed.kind), curActName(lh), tostring(canStartInterrupt(lh))), threat, lh)
+			clog("BREAK_PLAN", string.format("kind=%s name=%s %s %s %s remain=%.3f esc=%s dist=%.2f facing=%s pressed=%s cur=%s canStart=%s def=%s dual=%s", tostring(plan and plan.kind), tostring(plan and plan.rec and plan.rec.name), dodgeHold.whyFit(lh, threat, "Light01"), dodgeHold.whyFit(lh, threat, "Heavy01"), dodgeHold.whyFit(lh, threat, "Heavy02"), threat.remain, type(threat.cancelRemain) == "number" and string.format("%.3f", threat.cancelRemain) or "-", jumpDist, tostring(facing), tostring(pressed.kind), curActName(lh), tostring(canStartInterrupt(lh)), tostring(dodgeHold.defNow), tostring((type(threat.weapon)=="string" and catalog[threat.weapon] and catalog[threat.weapon].dualImp))), threat, lh)
 		end
 		local waiting = false
 		local coverRemain = ((threat.impN or 1) > 1) and (threat.lastRemain or threat.remain) or threat.remain
@@ -4599,7 +4654,7 @@ bind(RunService.RenderStepped, function(dt)
 			if lockedSwing then
 				doParry = false
 			end
-			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and not dbg._repeat("dodge")
+			local canDodgeNow = Config.BreakDodge and Config.AutoDodge and combatOn and not weStunned(lh) and not lh.IsDodging and amNow and amNow:CanStartDodge() and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and not dualParry and canDef and not dodgeDeclined and not dbg._repeat("dodge") and not dodgeHold.defNow
 			local doDodge = Config.AutoDodge and combatOn and (not threat.windup) and dodgeHold.cdOk() and dodgeCover <= dodgeLead and threat.remain >= 0.018 and (not threat.canParry or threat.remain < 0.04 or not Config.AutoParry or jumpAtk) and canDef and not dodgeDeclined
 			if pressed.kind == "wait" or pressed.kind == "block" then
 			elseif canDodgeNow then
@@ -5443,6 +5498,26 @@ function genv._DGAP.buildUI(ctx)
 	end, function(v)
 		Config.NoRepeatCounter = v
 	end, "If a dodge-attack counter was used too much, parry instead.")
+	apDelay:Header({ Name = "Defensive" })
+	apDelay:Button({
+		Name = "Def Auto",
+		Callback = function()
+			Config.Defensive = "Auto"
+		end,
+	})
+	apDelay:Button({
+		Name = "Def On",
+		Callback = function()
+			Config.Defensive = "On"
+		end,
+	})
+	apDelay:Button({
+		Name = "Def Off",
+		Callback = function()
+			Config.Defensive = "Off"
+		end,
+	})
+	disc(apDelay, "Auto: dual-imp weapon and their Light is faster than ours. No dodge-into-them counters. Parry dual hits.")
 
 	local apPlay = AutoParry:Section({ Side = "Right" })
 	apPlay:Header({ Name = "AutoPlay" })
