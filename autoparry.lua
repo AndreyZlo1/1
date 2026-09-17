@@ -2968,6 +2968,39 @@ local function clog(tag, msg, threat, lh)
 	dlog(tag, msg .. " | " .. enemyLine(threat, lh))
 end
 
+function dodgeHold.once(tag, key, msg, threat, lh)
+	local k = tostring(tag) .. ":" .. tostring(key)
+	if dbg.seen[k] then
+		return
+	end
+	dbg.seen[k] = true
+	clog(tag, msg, threat, lh)
+end
+
+function dodgeHold.whyFit(lh, threat, name)
+	if not threat then
+		return name .. "=no-threat"
+	end
+	local w = equippedName(lh and lh.OriginalModel)
+	local pack = type(w) == "string" and catalog[w]
+	local rec = packAttackRec(pack, name)
+	if not rec then
+		return name .. "=no-rec"
+	end
+	local remain = threat.remain or 0
+	local sa = threat.superArmor or 0
+	if rec.hit > remain then
+		return string.format("%s slow hit=%.3f>remain=%.3f", name, rec.hit, remain)
+	end
+	if rec.sa < sa then
+		return string.format("%s sa %.0f<%.0f", name, rec.sa, sa)
+	end
+	if type(threat.cancelRemain) == "number" and rec.hit > threat.cancelRemain + 0.02 then
+		return string.format("%s cancel hit=%.3f>esc=%.3f", name, rec.hit, threat.cancelRemain)
+	end
+	return string.format("%s fits hit=%.3f sa=%.0f", name, rec.hit, rec.sa)
+end
+
 local function threatSwingId(threat)
 	if not threat or not threat.model then
 		return ""
@@ -3086,7 +3119,7 @@ local function tryAttackHelper(lh, threat)
 		end
 		local rec = { name = name, kind = kind }
 		local ok = queueNamed(lh, rec)
-		clog("AH_" .. tag, string.format("ok=%s name=%s kind=%s dRemain=%.3f", tostring(ok), name, kind, remain or 0), {
+		clog("AH_" .. tag, string.format("ok=%s name=%s kind=%s dRemain=%.3f canQ=%s pressed=%s hitT=%.3f", tostring(ok), name, kind, remain or 0, tostring(canQueueAttack(lh)), tostring(pressed.kind), hitT(name)), {
 			weapon = equippedName(model),
 			attack = tag,
 			remain = remain or 0,
@@ -3209,12 +3242,32 @@ local function tryAttackHelper(lh, threat)
 					end
 					local goingAway = isRev or recedingFrom(lh, root, enemyVel(model, root)) or fromParry
 					local theirSwing = swinging or (threat and threat.will and threat.model == model and not threat.windup)
+					local fakeD = {
+						weapon = equippedName(model),
+						attack = "DODGE",
+						remain = iframeLeft,
+						tpos = dodgeAge,
+						will = false,
+						superArmor = 0,
+						model = model,
+						root = root,
+						impIndex = 1,
+						impN = 1,
+					}
+					dodgeHold.once("DODGE_SEE", lockK, string.format("age=%.3f iframeLeft=%.3f ourHit=%.3f landAt=%.3f minLand=%.3f maxLand=%.3f isRev=%s goingAway=%s d=%.2f reach=%.2f theirSwing=%s pressed=%s", dodgeAge, iframeLeft, ourHit, landAt, DODGE_IFRAME + 0.02, 0.466 + ping, tostring(isRev), tostring(goingAway), d, ourReach(lh, standName), tostring(theirSwing), tostring(pressed.kind)), fakeD, lh)
+					if landAt < DODGE_IFRAME + 0.02 then
+						dodgeHold.once("DODGE_SKIP", lockK .. ":early", string.format("EARLY iframe landAt=%.3f < %.3f (age=%.3f + hit=%.3f) wait", landAt, DODGE_IFRAME + 0.02, dodgeAge, ourHit), fakeD, lh)
+					elseif landAt > 0.466 + ping then
+						dodgeHold.once("DODGE_SKIP", lockK .. ":late", string.format("LATE they can parry landAt=%.3f > 0.466+ping=%.3f", landAt, 0.466 + ping), fakeD, lh)
+					elseif not (attackHits(lh, standName, root, model) or d <= ourReach(lh, standName) + 0.2) then
+						dodgeHold.once("DODGE_SKIP", lockK .. ":range", string.format("NO REACH d=%.2f reach=%.2f isRev=%s chaseBack=%s", d, ourReach(lh, standName), tostring(isRev), tostring(isRev and goingAway)), fakeD, lh)
+					end
 					if not ahDodgeLock[lockK] and not theirSwing then
 						if dodgeHold.parryLock then
 							dodgeHold.parryLock[model] = nil
 						end
-						if landAt >= DODGE_IFRAME - 0.02 and landAt <= 0.466 + ping then
-							if attackHits(lh, standName, root, model) or d <= ourReach(lh, standName) + 1.4 then
+						if landAt >= DODGE_IFRAME + 0.02 and landAt <= 0.466 + ping then
+							if attackHits(lh, standName, root, model) or d <= ourReach(lh, standName) + 0.2 then
 								if fire(standName, "DODGEHIT", model, root, iframeLeft, nil, nil, true) then
 									ahDodgeLock[lockK] = true
 									return true
@@ -3230,21 +3283,22 @@ local function tryAttackHelper(lh, threat)
 						local vflat = Vector3.new(vel.X, 0, vel.Z)
 						local sdir = vflat.Magnitude > 4 and vflat.Unit or away
 						local predI = root.Position + sdir * dodgeSlideDist(ourHit, theirDd)
-						if iframeLeft > 0.02 and landAt >= DODGE_IFRAME - 0.02 and landAt <= 0.466 + ping then
+						if iframeLeft > 0.02 and landAt >= DODGE_IFRAME + 0.02 and landAt <= 0.466 + ping then
 							if fire(standName, "PERFDODGE_BACK", model, root, iframeLeft, predI) then
 								ahDodgeLock[lockK] = true
 								return true
 							end
 						end
 						local dashHit = impactT("DashLight")
-						if iframeLeft >= 0.14 and dodgeAge + DODGE_CHAIN + dashHit <= 0.466 + ping then
+						local dashLand = dodgeAge + DODGE_CHAIN + dashHit
+						if isRev and dodgeHold.cdOk() and dashLand >= DODGE_IFRAME + 0.02 then
 							local ourSlide = dodgeSlideDist(DODGE_CHAIN, ourDd)
 							local theirSlide = dodgeSlideDist(math.min(0.466 - dodgeAge, DODGE_CHAIN + dashHit), theirDd)
 							local predUs = fromP + away * ourSlide
 							local predThem = root.Position + away * theirSlide
 							local reach = ourReach(lh, "DashLight")
 							local gap = dist2d(predUs, predThem)
-							if (attackHits(lh, "DashLight", root, model, predThem, predUs) or gap <= reach + 2.4) and dodgeHold.ahGate() and dodgeHold.cdOk() then
+							if (attackHits(lh, "DashLight", root, model, predThem, predUs) or gap <= reach + 2.4) then
 								if dodgeToward(lh, root.Position) then
 									ahDodgeLock[lockK] = true
 									lastAH = now
@@ -3257,7 +3311,7 @@ local function tryAttackHelper(lh, threat)
 									pressed.enemyRoot = root
 									pressed.enemyModel = model
 									dbg.helper += 1
-									clog("AH_BACKDODGE", string.format("iframe=%.3f d=%.2f dashHit=%.3f gap=%.2f", iframeLeft, d, dashHit, gap), {
+									clog("AH_BACKDODGE", string.format("iframe=%.3f d=%.2f dashHit=%.3f dashLand=%.3f gap=%.2f age=%.3f", iframeLeft, d, dashHit, dashLand, gap, dodgeAge), {
 										weapon = equippedName(model),
 										attack = "BACKDODGE",
 										remain = iframeLeft,
@@ -3350,7 +3404,7 @@ local function tryAttackHelper(lh, threat)
 						blockSince[model] = now
 						dodgeHold.parryWatch = dodgeHold.parryWatch or {}
 						dodgeHold.parryWatch[model] = now + 0.7
-						clog("AH_BLOCK_SEEN", string.format("parryWin hold start d=%.2f age=%.3f", dist2d(lh.Root.Position, root.Position), blockAge or 0), {
+						clog("AH_BLOCK_SEEN", string.format("parryWin d=%.2f age=%.3f ourHit=%.3f left=%.3f delay=%.3f ping=%.3f hold=0 pressed=%s", dist2d(lh.Root.Position, root.Position), blockAge or 0, hitT("Light01"), math.max(0, 0.233 - (blockAge or 0)), math.max(0, math.max(0, 0.233 - (blockAge or 0)) - hitT("Light01") + pingPad()), pingPad(), tostring(pressed.kind)), {
 							weapon = equippedName(model),
 							attack = "BLOCK",
 							remain = 0.233,
@@ -3392,47 +3446,37 @@ local function tryAttackHelper(lh, threat)
 						locked = dodgeHold.parryLock[handler.OriginalModel] and now < dodgeHold.parryLock[handler.OriginalModel]
 					end
 						local inStand = attackHits(lh, standL, root, model) or d <= ourReach(lh, standL) + 1.4
+						local fakeB = {
+							weapon = equippedName(model),
+							attack = "BLOCK",
+							remain = 0.233,
+							tpos = replicaAge,
+							will = false,
+							superArmor = 0,
+							model = model,
+							root = root,
+							impIndex = 1,
+							impN = 1,
+						}
 						if locked then
+							dodgeHold.once("PUNISH_SKIP", model, string.format("parryLock hold=%.3f age=%.3f", holdT, replicaAge), fakeB, lh)
 						elseif inStand then
+							if holdT < delay then
+								dodgeHold.once("PUNISH_WAIT", model, string.format("hold=%.3f < delay=%.3f left=%.3f ourHit=%.3f ping=%.3f", holdT, delay, left, ourHit, pingPad()), fakeB, lh)
+							elseif not canQueueAttack(lh) then
+								dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":q", "canQueue=false " .. curActName(lh), fakeB, lh)
+							end
+						else
+							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":range", string.format("no standing d=%.2f reach=%.2f (no dashatk on parry)", d, ourReach(lh, standL)), fakeB, lh)
+						end
+						if locked then
+							elseif inStand then
 							if holdT >= delay and canQueueAttack(lh) and fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
 								blockPunished[model] = true
 								return true
 							end
-						elseif dodgeHold.cdOk() then
-								local rec = { name = "DashLight", kind = "Light" }
-								local dashHit = impactT("DashLight")
-								if d <= ourReach(lh, rec.name) + travel * 0.65 then
-									if dodgeToward(lh, root.Position) then
-										lastAH = now
-										lastDodgeAt = now
-										pressed.kind = "dashatk"
-										pressed.untilTime = now + 0.55
-										pressed.at = now
-										pressed.from = "ah"
-										pressed.rec = rec
-										pressed.coverRemain = 0
-										pressed.escapeRemain = nil
-										pressed.dashHit = dashHit
-										dbg.helper += 1
-										blockPunished[model] = true
-										clog("AH_BLOCKDASH", string.format("gap dodge+%s hold=%.3f age=%.3f d=%.2f recede=%s", rec.name, holdT, replicaAge, d, tostring(recede)), {
-										weapon = equippedName(model),
-										attack = "BLOCKDASH",
-										remain = 0,
-										tpos = replicaAge,
-										will = false,
-										superArmor = 0,
-										model = model,
-										root = root,
-										impIndex = 1,
-										impN = 1,
-									}, lh)
-									return true
-								end
 							end
-						end
-					end
-				if blockPunishUntil[model] and now < blockPunishUntil[model] then
+							if blockPunishUntil[model] and now < blockPunishUntil[model] then
 					if not dodgeHold.parryAt(0, hitT(nextL)) and fire(nextL, "BLOCKREC", model, root, blockPunishUntil[model] - now) then
 						return true
 					end
@@ -3444,6 +3488,7 @@ local function tryAttackHelper(lh, threat)
 				end
 			end
 		end
+	end
 	end
 	return false
 end
@@ -3462,6 +3507,7 @@ local function dumpDebug()
 		"Dueling Grounds AP debug  " .. os.date("%Y-%m-%d %H:%M:%S"),
 		string.format("willHit=%d acted=%d (parry=%d dodge=%d interrupt=%d ah=%d) chip=%d skip=%d taken=%d enemyParry=%d enemyBlock=%d", dbg.will, acted, dbg.parry, dbg.dodge, dbg.interrupt, dbg.helper, dbg.chip, dbg.skip, dbg.taken, dbg.enemyParry, dbg.enemyBlock),
 		string.format("acted_rate=%.1f%%  clean_rate=%.1f%% (1 - taken/willHit)", acc, clean),
+		string.format("pressed=%s lastDodge=%.2fs Light01/Heavy01 from last threat in events", tostring(pressed.kind), lastDodgeAt > 0 and (os.clock() - lastDodgeAt) or -1),
 		"----",
 	}
 	for _, e in dbg.events do
@@ -4037,11 +4083,13 @@ bind(RunService.RenderStepped, function(dt)
 		dbg.lastThreat = string.format("%s %s t=%.3f sa=%.0f swing=%s", tostring(threat.weapon), tostring(threat.attack), threat.remain, threat.superArmor or 0, threat.swing and threat.swing.uid or "?")
 		if threat.swing and not dbg.seen[threat.swing.uid] then
 			dbg.seen[threat.swing.uid] = true
-			clog("THREAT", string.format("parryable=%s windup=%s saDmg=%.0f imp=%s/%s %s", tostring(threat.canParry), tostring(threat.windup), threat.saDmg or 0, tostring(threat.impIndex or 1), tostring(threat.impN or 1), ourHits(lh)), threat, lh)
+			clog("THREAT", string.format("parryable=%s windup=%s saDmg=%.0f esc=%s imp=%s/%s %s", tostring(threat.canParry), tostring(threat.windup), threat.saDmg or 0, type(threat.cancelRemain) == "number" and string.format("%.3f", threat.cancelRemain) or "-", tostring(threat.impIndex or 1), tostring(threat.impN or 1), ourHits(lh)), threat, lh)
 		end
 	end
 	if lh and Config.AttackHelper and (pressed.kind == nil or pressed.kind == "ah" or pressed.kind == "interrupt" or pressed.kind == "chip") then
 			tryAttackHelper(lh, threat)
+		elseif lh and Config.AttackHelper then
+			dodgeHold.once("AH_BUSY", tostring(pressed.kind), string.format("AH blocked pressed=%s", tostring(pressed.kind)), threat, lh)
 		end
 	if pressed.kind == "ah" or pressed.kind == "jumpatk" then
 		if threat and threat.will and not threat.windup then
@@ -4227,7 +4275,7 @@ bind(RunService.RenderStepped, function(dt)
 			dbg.seen[threat.swing.uid .. ":plan"] = true
 			local hv = bestOfKind(lh, threat, "Heavy", true)
 			local lv = bestOfKind(lh, threat, "Light", true)
-			clog("BREAK_PLAN", string.format("kind=%s name=%s lightBr=%s heavyBr=%s lHit=%s hHit=%s remain=%.3f dist=%.2f cur=%s canStart=%s", tostring(plan and plan.kind), tostring(plan and plan.rec and plan.rec.name), lv and lv.name or "no", hv and hv.name or "no", lv and string.format("%.3f", lv.hit) or "-", hv and string.format("%.3f", hv.hit) or "-", threat.remain, jumpDist, curActName(lh), tostring(canStartInterrupt(lh))), threat, lh)
+			clog("BREAK_PLAN", string.format("kind=%s name=%s %s %s remain=%.3f esc=%s dist=%.2f facing=%s pressed=%s cur=%s canStart=%s", tostring(plan and plan.kind), tostring(plan and plan.rec and plan.rec.name), dodgeHold.whyFit(lh, threat, "Light01"), dodgeHold.whyFit(lh, threat, "Heavy01"), threat.remain, type(threat.cancelRemain) == "number" and string.format("%.3f", threat.cancelRemain) or "-", jumpDist, tostring(facing), tostring(pressed.kind), curActName(lh), tostring(canStartInterrupt(lh))), threat, lh)
 		end
 		local waiting = false
 		local coverRemain = ((threat.impN or 1) > 1) and (threat.lastRemain or threat.remain) or threat.remain
