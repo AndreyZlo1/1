@@ -1020,7 +1020,7 @@ end
 local function jagBolt(a, b, now, seed, amp, thick, alpha)
 	local d = b - a
 	local mag = d.Magnitude
-	if mag < 0.05 or alpha < 0.05 then
+	if mag < 0.06 or alpha < 0.06 then
 		return
 	end
 	local along = d / mag
@@ -1041,22 +1041,17 @@ local function jagBolt(a, b, now, seed, amp, thick, alpha)
 	else
 		bin = Vector3.new(0, 1, 0)
 	end
-	local m1 = a:Lerp(b, 0.28) + side * (math.sin(now * 17 + seed) * amp) + bin * (math.sin(now * 13 + seed * 1.4) * amp * 0.4)
-	local m2 = a:Lerp(b, 0.54) + side * (math.sin(now * 22 + seed * 1.2 + 0.8) * amp * 0.95) + bin * (math.cos(now * 15 + seed) * amp * 0.5)
-	local m3 = a:Lerp(b, 0.78) + side * (math.sin(now * 19 + seed * 0.7 + 1.6) * amp * 0.7) + bin * (math.sin(now * 11 + seed * 2) * amp * 0.35)
-	local col = gradAlong(seed * 0.07 + now * 0.28)
+	local hold = math.floor(now * 9)
+	local h = hold * 1.17 + seed
+	local m1 = a:Lerp(b, 0.34) + side * (math.sin(h) * amp) + bin * (math.sin(h * 1.3) * amp * 0.4)
+	local m2 = a:Lerp(b, 0.68) + side * (math.sin(h * 1.7 + 0.9) * amp * 0.85) + bin * (math.cos(h * 0.9) * amp * 0.45)
+	local col = gradAlong(seed * 0.07 + now * 0.22)
 	line3(a, m1, col, thick, alpha)
 	line3(m1, m2, col, thick, alpha)
-	line3(m2, m3, col, thick, alpha)
-	line3(m3, b, col, thick, alpha)
-	local core = math.max(1, thick - 1)
-	line3(a, m1, col, core, alpha * 0.5)
-	line3(m1, m2, col, core, alpha * 0.5)
-	line3(m2, m3, col, core, alpha * 0.5)
-	line3(m3, b, col, core, alpha * 0.5)
-	if math.sin(seed * 3.07 + now * 0.45) > 0.28 then
-		local br = m2 + side * (amp * 1.55) + bin * (amp * 0.45)
-		line3(m2, br, col, 1, alpha * 0.5)
+	line3(m2, b, col, thick, alpha)
+	if math.sin(seed * 2.9 + hold) > 0.55 then
+		local br = m1 + side * (amp * 1.35) + bin * (amp * 0.4)
+		line3(m1, br, col, 1, alpha * 0.55)
 	end
 end
 
@@ -1070,11 +1065,11 @@ local function renderVolt(model, root, radius, yMin, yMax, appear, now)
 	local foot = fl and fr and (fl + fr) * 0.5 or (fl or fr or (root.CFrame * Vector3.new(0, yMin, 0)))
 	local top = head + Vector3.new(0, 0.45, 0)
 	local bot = foot + Vector3.new(0, -0.4, 0)
-	local vis = ease * 0.9
-	local steps = 14
+	local vis = ease * 0.92
+	local steps = 10
 	local last = math.max(2, math.floor(steps * ease + 0.5))
-	for wi = 1, 5 do
-		local off = wi * 1.2566
+	for wi = 1, 4 do
+		local off = wi * 1.5708
 		local prev
 		for s = 0, last do
 			local u = s / steps
@@ -1084,9 +1079,8 @@ local function renderVolt(model, root, radius, yMin, yMax, appear, now)
 			local rad = radius * flare * (0.85 + 0.12 * math.sin(u * 3.14159))
 			local p = Vector3.new(base.X + math.cos(twist) * rad, base.Y, base.Z + math.sin(twist) * rad)
 			if prev then
-				local pulse = 0.55 + 0.45 * math.sin(now * 1.4 + wi)
-				local amp = 0.07 + 0.05 * math.sin(now * 2.2 + wi)
-				jagBolt(prev, p, now, wi * 11 + s * 3.1, amp, th, vis * pulse)
+				local pulse = 0.62 + 0.38 * math.sin(now * 1.4 + wi)
+				jagBolt(prev, p, now, wi * 11 + s * 3.1, 0.09, th, vis * pulse)
 			end
 			prev = p
 		end
@@ -1095,52 +1089,46 @@ end
 
 local function renderVeil(model, root, radius, yMin, yMax, appear, now)
 	now = now * (Config.EspSpeed or 1)
-	local th = Config.EspThick or 2
+	local th = (Config.EspThick or 2) + 0.5
 	local ease = appear * appear * (3 - 2 * appear)
 	local top, bot = soulBounds(model, root, yMin, yMax)
-	local vis = ease * 0.88
-	local steps = 26
+	local vis = ease * 0.98
+	local steps = 22
 	local last = math.max(3, math.floor(steps * ease + 0.5))
-	for sheet = 1, 4 do
-		local phase = sheet * 1.5708
+	for sheet = 1, 3 do
+		local phase = sheet * 2.0944
 		local layer = {}
 		for tr = 1, 3 do
 			layer[tr] = {}
 		end
 		for s = 0, last do
 			local u = s / steps
-			local hem = math.sin(u * 3.14159)
-			local fold = 0.2 * math.sin(u * 5.2 + now * 0.55 + sheet * 0.7)
-			local twist = phase + now * 0.36 + u * 0.22 + 0.85 * math.sin(u * 1.8 + now * 0.32 + sheet)
+			local fold = 0.14 * math.sin(u * 4.4 + now * 0.5 + sheet * 0.8)
+			local twist = phase + now * 0.34 + u * 0.2 + 0.7 * math.sin(u * 1.7 + now * 0.3 + sheet)
 			for tr = 1, 3 do
-				local rMul = 1.18 + (tr - 2) * 0.11 + fold
-				layer[tr][s + 1] = soulPoint(bot, top, radius * rMul, u, twist, 1.12 + 0.16 * math.sin(u * 3.14 + tr))
+				local rMul = 0.98 + (tr - 2) * 0.09 + fold
+				layer[tr][s + 1] = soulPoint(bot, top, radius * rMul, u, twist, 1.06 + 0.1 * math.sin(u * 3.14 + tr))
 			end
 		end
 		for tr = 1, 3 do
 			local prev
 			for s = 1, last + 1 do
 				local u = (s - 1) / steps
-				local hem = math.sin(u * 3.14159)
+				local hem = 0.72 + 0.28 * math.sin(u * 3.14159)
 				local p = layer[tr][s]
 				if prev then
-					local pulse = 0.38 + 0.62 * math.sin(now * 0.65 + sheet * 0.5 + u * 2.2)
-					line3(prev, p, gradAlong(u * 0.45 + now * 0.1 + sheet * 0.08 + tr * 0.03), tr == 2 and th or math.max(1, th - 0.5), vis * pulse * (0.35 + 0.65 * hem))
+					local pulse = 0.78 + 0.22 * math.sin(now * 0.7 + sheet * 0.4 + u * 1.8)
+					line3(prev, p, gradAlong(u * 0.4 + now * 0.1 + sheet * 0.09 + tr * 0.03), tr == 2 and th or math.max(1.5, th - 0.4), vis * pulse * hem)
 				end
 				prev = p
 			end
 		end
-		for s = 1, last, 3 do
+		for s = 1, last, 2 do
 			local u = (s - 1) / steps
-			local hem = math.sin(u * 3.14159)
-			if hem > 0.12 then
-				local a = layer[1][s]
-				local b = layer[2][s]
-				local c = layer[3][s]
-				local col = gradAlong(u + now * 0.12 + sheet * 0.1)
-				line3(a, b, col, 1, vis * 0.35 * hem)
-				line3(b, c, col, 1, vis * 0.28 * hem)
-			end
+			local hem = 0.72 + 0.28 * math.sin(u * 3.14159)
+			local col = gradAlong(u + now * 0.12 + sheet * 0.1)
+			line3(layer[1][s], layer[2][s], col, 1.5, vis * 0.62 * hem)
+			line3(layer[2][s], layer[3][s], col, 1.5, vis * 0.55 * hem)
 		end
 	end
 end
@@ -1457,85 +1445,65 @@ local function renderHitFX(now)
 			local thick = Config.HitRingThick or 3
 			local kind = p.kind or "Wave"
 			if kind == "Ripple" then
-				for w = 0, 4 do
-					local delay = w * 0.13
-					local span = math.max(0.12, 1 - delay)
+				for w = 0, 2 do
+					local delay = w * 0.2
+					local span = math.max(0.2, 1 - delay)
 					local u = (t - delay) / span
 					if u > 0 and u < 1 then
 						local rs = 1 - (1 - u) * (1 - u)
 						local rr = p.r0 + (p.r1 - p.r0) * rs
-						local fa = u < 0.38 and 1 or (1 - (u - 0.38) / 0.62)
-						local a = alpha * math.clamp(fa, 0, 1) * (1 - w * 0.14)
-						local wob = 0.038 / (1 + w * 0.55)
-						drawHitRing(p.pos, rr, now, u, thick, a, 56, wob)
-						drawHitRing(p.pos, rr * 0.96, now, u, math.max(1, thick - 1), a * 0.4, 40, wob * 0.6)
-						if w <= 2 then
-							for k = 0, 17 do
-								local ang = k / 18 * 6.283185307179586 + u * 0.25 + w * 0.11
-								local lift = 0.07 * math.sin(u * 3.14159)
-								local bead = Vector3.new(p.pos.X + math.cos(ang) * rr, p.pos.Y + lift, p.pos.Z + math.sin(ang) * rr)
-								fillCircle(bead, 0.09 + 0.04 * (1 - u), gradAlong(k / 18 + now * 0.3, Config.HitRingColorA, Config.HitRingColorB), a * 0.55)
-							end
-						end
-						if w == 0 then
-							for k = 0, 23 do
-								local ang = k / 24 * 6.283185307179586 + t * 0.15
-								local i0 = rr * 0.86
-								local i1 = rr * 1.07
-								local col = gradAlong(k / 24 + now * 0.2, Config.HitRingColorA, Config.HitRingColorB)
-								line3(
-									Vector3.new(p.pos.X + math.cos(ang) * i0, p.pos.Y, p.pos.Z + math.sin(ang) * i0),
-									Vector3.new(p.pos.X + math.cos(ang) * i1, p.pos.Y, p.pos.Z + math.sin(ang) * i1),
-									col,
-									1,
-									a * 0.45
-								)
-							end
-						end
+						local fa = u < 0.42 and 1 or (1 - (u - 0.42) / 0.58)
+						local a = alpha * math.clamp(fa, 0, 1) * (1 - w * 0.22)
+						drawHitRing(p.pos, rr, now, u, thick, a, 48, 0.018)
 					end
 				end
 			elseif kind == "Sigil" then
-				drawHitRing(p.pos, rad, now, t, thick, alpha, 56, 0.012, t * 0.35)
-				drawHitRing(p.pos, rad * 0.62, now, t, math.max(1, thick - 1), alpha * 0.7, 40, 0.02, -t * 0.7)
-				local ir = rad * 0.42
-				local spin = t * 1.15
-				for tri = 0, 1 do
-					local pts = {}
-					for k = 0, 2 do
-						local ang = spin + tri * 3.14159 + k / 3 * 6.283185307179586
-						pts[k + 1] = Vector3.new(p.pos.X + math.cos(ang) * ir, p.pos.Y + 0.02, p.pos.Z + math.sin(ang) * ir)
-					end
-					local col = gradAlong(tri * 0.3 + now * 0.25, Config.HitRingColorA, Config.HitRingColorB)
-					line3(pts[1], pts[2], col, thick, alpha * 0.75)
-					line3(pts[2], pts[3], col, thick, alpha * 0.75)
-					line3(pts[3], pts[1], col, thick, alpha * 0.75)
+				drawHitRing(p.pos, rad, now, t, thick, alpha, 52, 0.01, t * 0.28)
+				drawHitRing(p.pos, rad * 0.78, now, t, math.max(1, thick - 1), alpha * 0.55, 40, 0.012, -t * 0.45)
+				local ir = rad * 0.4
+				local spin = t * 0.95
+				local hex = {}
+				for k = 0, 5 do
+					local ang = spin + k / 6 * 6.283185307179586
+					hex[k + 1] = Vector3.new(p.pos.X + math.cos(ang) * ir, p.pos.Y + 0.03, p.pos.Z + math.sin(ang) * ir)
 				end
-				for k = 0, 23 do
-					local reveal = math.clamp((t - k / 24 * 0.28) / 0.12, 0, 1)
+				local colh = gradAlong(now * 0.22, Config.HitRingColorA, Config.HitRingColorB)
+				for k = 1, 6 do
+					local nxt = hex[k == 6 and 1 or (k + 1)]
+					line3(hex[k], nxt, colh, thick, alpha * 0.85)
+					line3(hex[k], hex[k == 5 and 1 or k == 6 and 2 or (k + 2)], colh, 1, alpha * 0.45)
+					local ray = rad * 0.92
+					local ang = spin + (k - 1) / 6 * 6.283185307179586
+					line3(hex[k], Vector3.new(p.pos.X + math.cos(ang) * ray, p.pos.Y, p.pos.Z + math.sin(ang) * ray), colh, 1, alpha * 0.5)
+				end
+				for k = 0, 17 do
+					local reveal = math.clamp((t - k / 18 * 0.22) / 0.1, 0, 1)
 					if reveal > 0.05 then
-						local ang = k / 24 * 6.283185307179586 + t * 0.08
-						local long = (k % 3 == 0) and 1.1 or 1.04
-						local i0 = rad * 0.92
+						local ang = k / 18 * 6.283185307179586 + t * 0.06
+						local long = (k % 3 == 0) and 1.08 or 1.035
+						local i0 = rad * 0.93
 						local i1 = rad * long
-						local col = gradAlong(k / 24 + now * 0.2, Config.HitRingColorA, Config.HitRingColorB)
+						local col = gradAlong(k / 18 + now * 0.18, Config.HitRingColorA, Config.HitRingColorB)
 						line3(
 							Vector3.new(p.pos.X + math.cos(ang) * i0, p.pos.Y, p.pos.Z + math.sin(ang) * i0),
 							Vector3.new(p.pos.X + math.cos(ang) * i1, p.pos.Y, p.pos.Z + math.sin(ang) * i1),
 							col,
 							(k % 3 == 0) and thick or 1,
-							alpha * 0.55 * reveal
+							alpha * 0.6 * reveal
 						)
 					end
 				end
-				local d = rad * 0.12 * (1 + 0.25 * math.sin(t * 8))
-				local colc = gradAlong(now * 0.4, Config.HitRingColorA, Config.HitRingColorB)
-				line3(p.pos + Vector3.new(d, 0.03, 0), p.pos + Vector3.new(-d, 0.03, 0), colc, 1, alpha * 0.8)
-				line3(p.pos + Vector3.new(0, 0.03, d), p.pos + Vector3.new(0, 0.03, -d), colc, 1, alpha * 0.8)
-				for n = 1, 3 do
-					local ang = t * 2.4 + n / 3 * 6.283185307179586
-					local orad = rad * 0.62
-					local mote = Vector3.new(p.pos.X + math.cos(ang) * orad, p.pos.Y + 0.05, p.pos.Z + math.sin(ang) * orad)
-					fillCircle(mote, 0.11, gradAlong(n / 3 + now * 0.35, Config.HitRingColorA, Config.HitRingColorB), alpha * 0.7)
+				local sr = rad * 0.11 * (1 + 0.18 * math.sin(t * 6))
+				for k = 0, 5 do
+					local a0 = k / 6 * 6.283185307179586 + t * 0.4
+					local a1 = (k + 1) / 6 * 6.283185307179586 + t * 0.4
+					line3(
+						Vector3.new(p.pos.X + math.cos(a0) * sr, p.pos.Y + 0.04, p.pos.Z + math.sin(a0) * sr),
+						Vector3.new(p.pos.X + math.cos(a1) * sr, p.pos.Y + 0.04, p.pos.Z + math.sin(a1) * sr),
+						colh,
+						1,
+						alpha * 0.75
+					)
 				end
 			else
 				local segs = 48
