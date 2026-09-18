@@ -2338,17 +2338,107 @@ function dodgeHold.ok(threat, coverRemain, dashHit)
 	return (coverRemain or threat.remain or 0) <= DODGE_IFRAME + 0.02
 end
 
+function dodgeHold.retapSeen(model, now)
+	dodgeHold._retap = dodgeHold._retap or {}
+	local r = dodgeHold._retap[model]
+	if not r then
+		r = { last = 0, taps = 0, habit = 0 }
+		dodgeHold._retap[model] = r
+	end
+	local dt = now - r.last
+	if r.last > 0 and dt < 0.10 then
+		return r.taps >= 2, r.taps
+	end
+	if r.last > 0 and dt < 0.70 then
+		r.taps += 1
+		r.habit = now + 2.8
+	else
+		r.taps = 1
+	end
+	r.last = now
+	return r.taps >= 2, r.taps
+end
+
+function dodgeHold.retapHabit(model, now)
+	local r = dodgeHold._retap and dodgeHold._retap[model]
+	if not r then
+		return false, 0
+	end
+	local live = r.taps >= 2 and (now - r.last) < 0.70
+	return live or now < r.habit, r.taps
+end
+
+function dodgeHold.retapMark(model, now)
+	if not model then
+		return
+	end
+	dodgeHold._retap = dodgeHold._retap or {}
+	local r = dodgeHold._retap[model]
+	if not r then
+		r = { last = 0, taps = 0, habit = 0 }
+		dodgeHold._retap[model] = r
+	end
+	r.habit = now + 2.8
+end
+
 function dodgeHold.followRec(lh, threat)
+	if dodgeHold.turtleNow or dodgeHold.defNow then
+		return nil
+	end
 	if not dodgeHold.ok(threat, threat and threat.remain, dodgeHold.hit(lh)) then
 		return nil
 	end
+	local dashHit = dodgeHold.hit(lh)
+	local ourLand = DODGE_CHAIN + dashHit
+	local esc = threat and threat.cancelRemain
+	if type(esc) == "number" and ourLand > esc - 0.02 then
+		return nil
+	end
 	local theirSa = threat.superArmor or 0
-	local esc = threat.cancelRemain
-	local dhLand = DODGE_CHAIN + 0.5
-	if theirSa > 20 and type(esc) == "number" and dhLand <= esc - 0.02 then
+	if theirSa > 20 then
+		local hLand = DODGE_CHAIN + 0.5
+		if type(esc) ~= "number" or hLand > esc - 0.02 then
+			return nil
+		end
 		return { name = "DashHeavy", kind = "Heavy" }
 	end
 	return { name = "DashLight", kind = "Light" }
+end
+
+function dodgeHold.tryRetap(lh, model, root, now)
+	local isRt, nRt = dodgeHold.retapHabit(model, now)
+	if not isRt then
+		return nil, nRt
+	end
+	if dodgeHold.turtleNow or dodgeHold.defensive(lh, equippedName(model)) then
+		return "def", nRt
+	end
+	if not lh or not lh.Root or not root then
+		return "no", nRt
+	end
+	if not dodgeHold.cdOk() then
+		return "cd", nRt
+	end
+	local am = lh.ActionManager
+	if not am or not am:CanStartDodge() then
+		return "am", nRt
+	end
+	if not dodgeToward(lh, root.Position) then
+		return "fail", nRt
+	end
+	pressed.kind = "dashatk"
+	pressed.from = "retap"
+	pressed.at = now
+	pressed.untilTime = now + 0.55
+	pressed.rec = { name = "DashLight", kind = "Light" }
+	pressed.coverRemain = 0
+	pressed.dashHit = dodgeHold.hit(lh)
+	pressed.enemyRoot = root
+	pressed.enemyModel = model
+	pressed.key = tostring(model)
+	lastAH = now
+	dbg.helper += 1
+	return true, nRt
 end
 
 function dodgeHold.arm(lh, threat, from, wantFollow)
@@ -2363,8 +2453,8 @@ function dodgeHold.arm(lh, threat, from, wantFollow)
 	pressed.coverRemain = threat and threat.remain or 0
 	pressed.escapeRemain = threat and threat.cancelRemain
 	pressed.dashHit = dodgeHold.hit(lh)
-	if wantFollow and dodgeHold.ok(threat, pressed.coverRemain, pressed.dashHit) then
-		pressed.rec = dodgeHold.followRec(lh, threat) or { name = "DashLight", kind = "Light" }
+	if wantFollow then
+		pressed.rec = dodgeHold.followRec(lh, threat)
 	else
 		pressed.rec = nil
 	end
@@ -3571,29 +3661,15 @@ local function tryAttackHelper(lh, threat)
 				local flagBlock = model:GetAttribute("IsBlocking") == true or model:GetAttribute("ClientIsBlocking") == true or (handler and handler.IsBlocking == true)
 				local blocking = flagBlock or blockingAnim == true
 				if flagBlock then
-					if blockingAnim and (blockAge or 1) < 0.07 and blockSince[model] and (now - blockSince[model]) > 0.12 then
+					if not blockSince[model] then
+						local liveRt, nRt = dodgeHold.retapSeen(model, now)
 						blockSince[model] = now
-						blockPunished[model] = nil
+						if not liveRt then
+							blockPunished[model] = nil
+						end
 						dodgeHold.parryWatch = dodgeHold.parryWatch or {}
 						dodgeHold.parryWatch[model] = now + 0.7
-						clog("AH_BLOCK_RETAP", string.format("age=%.3f reset wait", blockAge or 0), {
-							weapon = equippedName(model),
-							attack = "BLOCK",
-							remain = 0.233,
-							tpos = blockAge or 0,
-							will = false,
-							superArmor = 0,
-							model = model,
-							root = root,
-							impIndex = 1,
-							impN = 1,
-						}, lh)
-					elseif not blockSince[model] then
-						blockSince[model] = now
-						blockPunished[model] = nil
-						dodgeHold.parryWatch = dodgeHold.parryWatch or {}
-						dodgeHold.parryWatch[model] = now + 0.7
-						clog("AH_BLOCK_SEEN", string.format("parryWin d=%.2f age=%.3f ourHit=%.3f left=%.3f retapCover=%.3f cd=0 ping=%.3f hold=0 pressed=%s", dist2d(lh.Root.Position, root.Position), blockAge or 0, hitT("Light01"), math.max(0, 0.233 - (blockAge or 0)), (blockAge or 0) + 0.466, pingPad(), tostring(pressed.kind)), {
+						clog(liveRt and "AH_BLOCK_RETAP" or "AH_BLOCK_SEEN", string.format("parryWin d=%.2f age=%.3f ourHit=%.3f left=%.3f taps=%d live=%s ping=%.3f pressed=%s", dist2d(lh.Root.Position, root.Position), blockAge or 0, hitT("Light01"), math.max(0, 0.233 - (blockAge or 0)), nRt, tostring(liveRt), pingPad(), tostring(pressed.kind)), {
 							weapon = equippedName(model),
 							attack = "BLOCK",
 							remain = 0.233,
@@ -3643,21 +3719,33 @@ local function tryAttackHelper(lh, threat)
 					}
 					if swinging or jumping or (threat and threat.will and threat.model == model and not threat.windup) then
 						dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":swing", string.format("block+swing no punish jump=%s swing=%s sa=%.0f atk=%s", tostring(jumping), tostring(swinging), (threat and threat.model == model and threat.superArmor) or 0, tostring(threat and threat.model == model and threat.attack)), fakeB, lh)
-					elseif locked then
-						dodgeHold.once("PUNISH_SKIP", model, string.format("parryLock hold=%.3f age=%.3f", holdT, replicaAge), fakeB, lh)
+					elseif dodgeHold.turtleNow or dodgeHold.defensive(lh, equippedName(model)) then
+						dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":def", string.format("AH defensive/turtle no parryable punish age=%.3f", replicaAge), fakeB, lh)
+					elseif pressed.kind == "interrupt" or (lastDodgeAt > 0 and (now - lastDodgeAt) < 0.55) then
+						dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":pile", string.format("in-flight pressed=%s dodgeAge=%.3f", tostring(pressed.kind), lastDodgeAt > 0 and (now - lastDodgeAt) or -1), fakeB, lh)
 					elseif flagBlock then
 						if replicaAge >= 0.233 then
 							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":hold", string.format("holding age=%.3f (IsParrying=false Light=Block)", replicaAge), fakeB, lh)
 						elseif not inStand then
 							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":range", string.format("no standing d=%.2f reach=%.2f", d, ourReach(lh, standL)), fakeB, lh)
-						elseif not canQueueAttack(lh) then
-							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":q", "canQueue=false " .. curActName(lh), fakeB, lh)
-						elseif fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
-							blockPunished[model] = true
-							return true
+						else
+							local rt, nRt = dodgeHold.tryRetap(lh, model, root, now)
+							if rt == true then
+								blockPunished[model] = true
+								clog("AH_RETAP", string.format("dodge+DashLight taps=%d land=%.3f win=0.233 d=%.2f", nRt, DODGE_CHAIN + dodgeHold.hit(lh), d), fakeB, lh)
+								return true
+							elseif rt then
+								dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":retap", string.format("retap %s taps=%d land=%.3f", tostring(rt), nRt, DODGE_CHAIN + dodgeHold.hit(lh)), fakeB, lh)
+							else
+								dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":wait", string.format("waitRetap first tap Light=%.3f>win=0.233 taps=%d", ourHit, nRt), fakeB, lh)
+							end
 						end
 					elseif blockPunishUntil[model] and now < blockPunishUntil[model] then
-						if not inStand then
+						if locked then
+							dodgeHold.once("PUNISH_SKIP", model, string.format("parryLock rec hold=%.3f", holdT), fakeB, lh)
+						elseif ourHit > 0.20 then
+							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":rec", string.format("BLOCKREC Light=%.3f > recovery=0.20", ourHit), fakeB, lh)
+						elseif not inStand then
 							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":range", string.format("no standing d=%.2f reach=%.2f (no dashatk on parry)", d, ourReach(lh, standL)), fakeB, lh)
 						elseif not canQueueAttack(lh) then
 							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":q", "canQueue=false " .. curActName(lh), fakeB, lh)
@@ -3668,8 +3756,10 @@ local function tryAttackHelper(lh, threat)
 					end
 				end
 				if Config.AHPunishWhiff and recovering and (now - lastAH) > (Config.AHWhiffGate or 0.45) and (now - lastDodgeAt) > 0.5 and (now - lastTakenAt) > 0.65 then
-					if fire(nextL, "WHIFF", model, root, 0) then
-						return true
+					if not dodgeHold.turtleNow and not dodgeHold.defensive(lh, equippedName(model)) then
+						if fire(nextL, "WHIFF", model, root, 0) then
+							return true
+						end
 					end
 				end
 			end
@@ -5015,11 +5105,14 @@ bind(ReplicatedStorage.Remotes.Combat.Impact.OnClientEvent, function(_, effect, 
 			dbg.enemyParry += 1
 			dlog("ENEMY_PARRY", "effect=" .. tostring(effect) .. " def=" .. tostring(defender and defender.Name))
 			dodgeHold.parryLock = dodgeHold.parryLock or {}
+			local nowP = os.clock()
 			if defender then
-				dodgeHold.parryLock[defender] = os.clock() + 0.65
+				dodgeHold.parryLock[defender] = nowP + 0.65
+				dodgeHold.retapMark(defender, nowP)
 				local hd = CharacterController:GetCharacterHandler(defender)
 				if hd and hd.OriginalModel then
-					dodgeHold.parryLock[hd.OriginalModel] = os.clock() + 0.65
+					dodgeHold.parryLock[hd.OriginalModel] = nowP + 0.65
+					dodgeHold.retapMark(hd.OriginalModel, nowP)
 				end
 			end
 		end
@@ -5818,6 +5911,7 @@ function genv._DGAP.buildUI(ctx)
 		end, function(v)
 			Config.AHPunishBlock = v
 		end, "Hit when they hold block.")
+		disc(atL, "Uses Defensive and Low Posture. Skips hits they can parry.")
 		boolToggle(atL, "Punish Whiff", "DG_AHPunishWhiff", function()
 			return Config.AHPunishWhiff
 		end, function(v)
