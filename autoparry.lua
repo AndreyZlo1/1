@@ -1560,6 +1560,10 @@ local function pressGuard(lh, retap)
 		return false
 	end
 	if not retap then
+		local want = lh._desiredQueuedAction
+		if want == "Jump" or want == "LightAttack" or want == "HeavyAttack" or want == "Ultimate" then
+			return false
+		end
 		if lh.IsParrying then
 			return true
 		end
@@ -1573,6 +1577,9 @@ local function pressGuard(lh, retap)
 	end
 	local q = lh._blockInputQueue
 	if type(q) ~= "table" or #q >= 2 then
+		return false
+	end
+	if not retap and #q > 0 then
 		return false
 	end
 	q[#q + 1] = { state = true }
@@ -1608,6 +1615,28 @@ function dodgeHold.asC(fn)
 		setstackhidden(fn, true)
 	end
 	return fn
+end
+
+function dodgeHold.playerBusy(lh)
+	if not lh then
+		return nil
+	end
+	local want = lh._desiredQueuedAction
+	if want == "Jump" or want == "LightAttack" or want == "HeavyAttack" or want == "Ultimate" then
+		return want
+	end
+	if lh._desiredDodge and not dodgeHold._ourDodge then
+		return "Dodge"
+	end
+	local q = lh._blockInputQueue
+	if type(q) == "table" and #q > 0 then
+		return "Block"
+	end
+	return nil
+end
+
+function dodgeHold.yieldLog(lh, why)
+	dodgeHold.once("PLAYER_YIELD", tostring(why), "yield " .. tostring(why), nil, lh)
 end
 local DODGE_IFRAME = 0.3
 local DODGE_CHAIN = 0.26666666666666666
@@ -1669,6 +1698,11 @@ local function pressDodge(lh)
 	if lh.IsDodging then
 		return false
 	end
+	local busy = dodgeHold.playerBusy(lh)
+	if busy then
+		dodgeHold.yieldLog(lh, busy)
+		return false
+	end
 	local am = lh.ActionManager
 	if not am or not am:CanStartDodge() then
 		return false
@@ -1678,6 +1712,7 @@ local function pressDodge(lh)
 	end
 	wrapDodgeCheck(lh)
 	lh._desiredDodge = DODGE_CHAIN
+	dodgeHold._ourDodge = true
 	lastDodgeAt = os.clock()
 	return true
 end
@@ -3071,6 +3106,13 @@ function dodgeHold.pokeRec(lh, threat, wantKind)
 end
 
 local function queueNamed(lh, rec)
+	if not rec then
+		return false
+	end
+	if dodgeHold.playerBusy(lh) then
+		dodgeHold.yieldLog(lh, dodgeHold.playerBusy(lh))
+		return false
+	end
 	if not canQueueAttack(lh) then
 		return false
 	end
@@ -3317,6 +3359,10 @@ end
 
 local function tryAttackHelper(lh, threat)
 	if not Config.AttackHelper or not lh or weStunned(lh) then
+		return false
+	end
+	if dodgeHold.playerBusy(lh) then
+		dodgeHold.yieldLog(lh, dodgeHold.playerBusy(lh))
 		return false
 	end
 	if pressed.kind == "parry" or pressed.kind == "dodge" or pressed.kind == "wait" or pressed.kind == "block" or pressed.kind == "dashatk" or pressed.kind == "gapclose" or pressed.kind == "jumpatk" then
@@ -4172,6 +4218,7 @@ bind(RunService.RenderStepped, function(dt)
 		return
 	end
 	beginFrame()
+	dodgeHold._ourDodge = nil
 	if not Config.Enabled then
 		endFrame()
 		return
@@ -4660,7 +4707,7 @@ bind(RunService.RenderStepped, function(dt)
 					end
 				end
 			end
-		elseif plan and plan.kind == "jump" and jumpOk then
+		elseif plan and plan.kind == "jump" and jumpOk and not dodgeHold.playerBusy(lh) then
 			local to = threat.root.Position - lh.Root.Position
 			local flat = Vector3.new(to.X, 0, to.Z)
 			local dir
