@@ -3,7 +3,8 @@ if genv._DGAP then
 	genv._DGAP.unload()
 end
 
-local ESP_STYLES = { "Soul", "Skeleton", "Rift", "Weave" }
+local ESP_STYLES = { "Soul", "Ember", "Veil", "Current" }
+local HIT_RING_STYLES = { "Wave", "Storm", "Nova", "Fracture", "Ripple" }
 
 local Config = {
 	Enabled = true,
@@ -74,6 +75,7 @@ local Config = {
 	HitSoundPreset = "Fatality",
 	HitSoundVolume = 3.5,
 	HitRing = true,
+	HitRingStyle = "Wave",
 	HitRingLife = 1.85,
 	HitRingR0 = 0.45,
 	HitRingR1 = 5.6,
@@ -881,18 +883,25 @@ local function morphPoly(k0, k1, t, n, r)
 	return out
 end
 
-local function renderSoul(model, root, radius, yMin, yMax, _color, appear, now)
-	now = now * (Config.EspSpeed or 1)
-	local th = Config.EspThick or 2
-	local ease = appear * appear * (3 - 2 * appear)
+local function soulBounds(model, root, yMin, yMax)
 	local head = partPos(model, "Head") or (root.CFrame * Vector3.new(0, yMax, 0))
 	local fl = partPos(model, "LeftFoot")
 	local fr = partPos(model, "RightFoot")
 	local foot = fl and fr and (fl + fr) * 0.5 or (fl or fr or (root.CFrame * Vector3.new(0, yMin, 0)))
-	local top = head + Vector3.new(0, 0.45, 0)
-	local bot = foot + Vector3.new(0, -0.4, 0)
-	local span = math.max(0.4, top.Y - bot.Y)
-	local stretch = math.clamp((span - 2.8) / 3.2, 0, 1)
+	return head + Vector3.new(0, 0.45, 0), foot + Vector3.new(0, -0.4, 0)
+end
+
+local function soulPoint(bot, top, radius, u, twist, flare)
+	local base = bot:Lerp(top, u)
+	local rad = radius * flare * (0.85 + 0.12 * math.sin(u * 3.14159))
+	return Vector3.new(base.X + math.cos(twist) * rad, base.Y, base.Z + math.sin(twist) * rad)
+end
+
+local function renderSoul(model, root, radius, yMin, yMax, _color, appear, now)
+	now = now * (Config.EspSpeed or 1)
+	local th = Config.EspThick or 2
+	local ease = appear * appear * (3 - 2 * appear)
+	local top, bot = soulBounds(model, root, yMin, yMax)
 	local vis = ease * 0.9
 	local steps = 16
 	local last = math.max(2, math.floor(steps * ease + 0.5))
@@ -901,13 +910,10 @@ local function renderSoul(model, root, radius, yMin, yMax, _color, appear, now)
 		local prev
 		for s = 0, last do
 			local u = s / steps
-			local base = bot:Lerp(top, u)
 			local twist = off + now * 1.15 + u * 0.55
 			twist += 0.55 * math.sin(u * 2.4 + now * 0.9 + wi)
 			twist += (1 - u) * 0.55 * math.sin(now * 0.9 + wi)
-			local flare = 1.08 + 0.12 * (1 - u)
-			local rad = radius * flare * (0.85 + 0.12 * math.sin(u * 3.14159))
-			local p = Vector3.new(base.X + math.cos(twist) * rad, base.Y, base.Z + math.sin(twist) * rad)
+			local p = soulPoint(bot, top, radius, u, twist, 1.08 + 0.12 * (1 - u))
 			if prev then
 				local pulse = 0.55 + 0.45 * math.sin(now * 1.4 + wi)
 				line3(prev, p, gradAlong(u + now * 0.22 + wi * 0.12), th, vis * pulse)
@@ -915,126 +921,91 @@ local function renderSoul(model, root, radius, yMin, yMax, _color, appear, now)
 			prev = p
 		end
 	end
+	fillCircle(top, 0.22, gradAlong(now * 0.3), vis * 0.55)
+	fillCircle(bot, 0.16, gradAlong(now * 0.3 + 0.5), vis * 0.35)
 end
 
-local function renderSkeleton(model, _root, _color, appear, now)
-	now = now * (Config.EspSpeed or 1)
-	local th = Config.EspThick or 2
-	local a0 = appear * 0.95
-	local col = gradAlong(now * 0.18)
-	for _, pair in BONES do
-		local a = partPos(model, pair[1])
-		local b = partPos(model, pair[2])
-		if a and b then
-			line3(a, b, col, th, a0)
-			local j = a:Lerp(b, 0.5)
-			local side = (b - a)
-			if side.Magnitude > 0.2 then
-				side = side:Cross(Vector3.new(0, 1, 0))
-				if side.Magnitude > 0.01 then
-					side = side.Unit * 0.12
-					line3(j - side, j + side, col, 1, a0 * 0.7)
-				end
-			end
-		end
-	end
-end
-
-local function renderPulse(root, radius, yMin, yMax, _color, appear, now)
-	now = now * (Config.EspSpeed or 1)
-	local th = Config.EspThick or 2
-	local mid = root.CFrame * Vector3.new(0, (yMin + yMax) * 0.5, 0)
-	local s = radius * (1.05 + 0.18 * math.sin(now * 2.4))
-	local v = {
-		mid + Vector3.new(s, 0, 0),
-		mid + Vector3.new(-s, 0, 0),
-		mid + Vector3.new(0, s, 0),
-		mid + Vector3.new(0, -s, 0),
-		mid + Vector3.new(0, 0, s),
-		mid + Vector3.new(0, 0, -s),
-	}
-	local edges = { { 1, 3 }, { 1, 4 }, { 1, 5 }, { 1, 6 }, { 2, 3 }, { 2, 4 }, { 2, 5 }, { 2, 6 }, { 3, 5 }, { 3, 6 }, { 4, 5 }, { 4, 6 } }
-	local vis = appear * 0.94
-	local col = gradAlong(now * 0.18)
-	for _, e in edges do
-		line3(v[e[1]], v[e[2]], col, th, vis)
-	end
-end
-
-local function renderCoil(root, radius, yMin, yMax, _color, appear, now)
-	now = now * (Config.EspSpeed or 1)
-	local th = Config.EspThick or 2
-	local origin = root.CFrame.Position
-	local span = yMax - yMin
-	local vis = appear * 0.94
-	local pts = {}
-	local steps = 22
-	for s = 0, steps do
-		local u = s / steps
-		local y = yMin + u * span
-		local ang = u * 10 + now * 1.3
-		local rad = radius * 1.15
-		pts[s + 1] = origin + Vector3.new(math.cos(ang) * rad, y, math.sin(ang) * rad)
-	end
-	pathLine(pts, now, th, vis)
-end
-
-local function renderRift(root, radius, yMin, yMax, _color, appear, now)
+local function renderEmber(model, root, radius, yMin, yMax, appear, now)
 	now = now * (Config.EspSpeed or 1)
 	local th = Config.EspThick or 2
 	local ease = appear * appear * (3 - 2 * appear)
-	local mid = root.CFrame * Vector3.new(0, (yMin + yMax) * 0.5, 0)
-	local spin = now * 0.55
-	local r = radius * 1.12 * (0.4 + 0.6 * ease)
-	local function orbitPt(ang, i)
-		local warp = 1 + 0.08 * math.sin(ang * 2 + now * 0.8)
-		return mid + Vector3.new(math.cos(ang) * r * warp, math.sin(now * 1.4 + (i or 0)) * 0.16, math.sin(ang) * r * warp)
-	end
-	local segs = 32
-	for i = 1, segs do
-		if i % 2 == 1 then
-			local a0 = spin + (i - 1) / segs * 6.283185307179586
-			local a1 = spin + i / segs * 6.283185307179586
-			line3(orbitPt(a0, i), orbitPt(a1, i + 1), gradAlong(i / segs + now * 0.18), th, ease * 0.38)
+	local top, bot = soulBounds(model, root, yMin, yMax)
+	local vis = ease * 0.9
+	local steps = 14
+	local last = math.max(2, math.floor(steps * ease + 0.5))
+	for wi = 1, 4 do
+		local off = wi * 1.5708
+		local prev
+		for s = 0, last do
+			local u = s / steps
+			local twist = off + now * 1.35 + u * 0.4
+			twist += 0.7 * math.sin(u * 3.1 + now * 1.1 + wi)
+			local p = soulPoint(bot, top, radius * 0.92, u, twist, 1.02 + 0.2 * u)
+			if prev then
+				line3(prev, p, gradAlong(u * 0.7 + now * 0.35 + wi * 0.08), th, vis * (0.45 + 0.55 * u))
+			end
+			if s % 2 == 0 then
+				local lift = ((now * 0.9 + wi * 0.37 + u) % 1)
+				local mote = p + Vector3.new(math.sin(now * 2 + wi) * 0.08, lift * 0.95, math.cos(now * 1.6 + wi) * 0.08)
+				fillCircle(mote, 0.11 + 0.06 * (1 - lift), gradAlong(u + now * 0.4), vis * (1 - lift) * 0.7)
+			end
+			prev = p
 		end
 	end
-	local shards = 8
-	for i = 1, shards do
-		local delay = (i - 1) / shards * 0.28
-		local u = math.clamp((appear - delay) / 0.55, 0, 1)
-		if u > 0.04 then
-			local a = spin + i / shards * 6.283185307179586
-			local p = orbitPt(a, i)
-			local tangent = Vector3.new(-math.sin(a), 0.08, math.cos(a)) * (0.34 * u)
-			local up = Vector3.new(0, 0.3 * u, 0)
-			local gc = gradAlong(i / shards + now * 0.28)
-			local vis = ease * 0.9 * u
-			line3(p + tangent, p - tangent * 0.55 + up, gc, th, vis)
-			line3(p - tangent * 0.55 + up, p - tangent * 0.25 - up * 0.45, gc, th, vis)
-			line3(p - tangent * 0.25 - up * 0.45, p + tangent, gc, th, vis)
+	fillCircle(top, 0.18, gradAlong(now * 0.4), vis * 0.4)
+end
+
+local function renderVeil(model, root, radius, yMin, yMax, appear, now)
+	now = now * (Config.EspSpeed or 1)
+	local th = math.max(1, (Config.EspThick or 2) + 0.5)
+	local ease = appear * appear * (3 - 2 * appear)
+	local top, bot = soulBounds(model, root, yMin, yMax)
+	local vis = ease * 0.82
+	local steps = 18
+	local last = math.max(2, math.floor(steps * ease + 0.5))
+	for wi = 1, 7 do
+		local off = wi * 0.8976
+		local prev
+		for s = 0, last do
+			local u = s / steps
+			local breathe = 0.18 * math.sin(now * 0.55 + wi * 0.4)
+			local twist = off + now * 0.52 + u * 0.35 + breathe
+			twist += 0.95 * math.sin(u * 1.7 + now * 0.4 + wi * 0.6)
+			local p = soulPoint(bot, top, radius * (1.28 + breathe), u, twist, 1.2 + 0.22 * math.sin(u * 3.14))
+			if prev then
+				local pulse = 0.4 + 0.6 * math.sin(now * 0.7 + wi * 0.5 + u * 2)
+				line3(prev, p, gradAlong(u * 0.5 + now * 0.12 + wi * 0.07), th, vis * pulse)
+			end
+			prev = p
 		end
 	end
 end
 
-local function renderWeave(root, radius, yMin, yMax, _color, appear, now)
+local function renderCurrent(model, root, radius, yMin, yMax, appear, now)
 	now = now * (Config.EspSpeed or 1)
 	local th = Config.EspThick or 2
-	local mid = root.CFrame * Vector3.new(0, (yMin + yMax) * 0.5, 0)
-	local vis = appear * 0.94
-	local segs = 32
-	for strand = 1, 2 do
-		local pts = {}
-		local ph = strand == 1 and 0 or 3.14159
-		for s = 0, segs do
-			local u = s / segs
-			local a = u * 6.283185307179586 + now * 0.85 + ph
-			local warp = 1 + 0.14 * math.sin(a * 2 + now * 1.05)
-			local y = (yMax - yMin) * 0.38 * math.sin(a + ph)
-			local rad = radius * 1.35 * warp
-			pts[s + 1] = mid + Vector3.new(math.cos(a) * rad, y, math.sin(a) * rad)
+	local ease = appear * appear * (3 - 2 * appear)
+	local top, bot = soulBounds(model, root, yMin, yMax)
+	local vis = ease * 0.9
+	local steps = 15
+	local last = math.max(2, math.floor(steps * ease + 0.5))
+	for wi = 1, 3 do
+		local off = wi * 2.0944
+		local prev
+		for s = 0, last do
+			local u = s / steps
+			local twist = off + now * 1.55 + u * 0.8
+			twist += 0.35 * math.sin(u * 5 + now * 2.2 + wi)
+			local p = soulPoint(bot, top, radius * 1.05, u, twist, 1.05 + 0.1 * (1 - u))
+			if prev then
+				line3(prev, p, gradAlong(u + now * 0.5 + wi * 0.2), th, vis * (0.5 + 0.5 * math.sin(now * 3 + wi)))
+			end
+			prev = p
 		end
-		pathLine(pts, now + strand, th, vis)
 	end
+	lightning.bolts = lightning.bolts or {}
+	renderLightning(root, radius * 0.95, yMin, yMax, ease, now, lightning.bolts)
+	fillCircle((top + bot) * 0.5, 0.2 + 0.08 * math.sin(now * 6), gradAlong(now * 0.6), vis * 0.45)
 end
 
 local BOX_EDGES = {
@@ -1180,7 +1151,7 @@ local function spawnHitFX(pos)
 		fy = pos.Y - 2.5
 	end
 	hitSparks[#hitSparks + 1] = {
-		kind = "ring",
+		kind = Config.HitRingStyle or "Wave",
 		pos = Vector3.new(pos.X, fy + 0.08, pos.Z),
 		spawn = os.clock(),
 		life = Config.HitRingLife or 1.85,
@@ -1300,12 +1271,44 @@ local function drawWarp(a, b, seed, now, amp, col, alpha)
 	line3(p2, p3, col, 2, alpha)
 end
 
+local function drawHitRing(origin, rad, now, t, thick, alpha, segs, wobble)
+	if rad < 0.04 or alpha < 0.04 then
+		return
+	end
+	segs = segs or 48
+	local prev
+	local y = origin.Y
+	for k = 0, segs do
+		local a = k / segs * 6.283185307179586
+		local wob = 1 + (wobble or 0.028) * math.sin(a * 2 + t * 1.6)
+		local rr = rad * wob
+		local pt = Vector3.new(origin.X + math.cos(a) * rr, y, origin.Z + math.sin(a) * rr)
+		if prev then
+			line3(prev, pt, gradAlong(k / segs + now * 0.45, Config.HitRingColorA, Config.HitRingColorB), thick, alpha)
+		end
+		prev = pt
+	end
+end
+
+local function drawHitArc(origin, rad, a0, a1, now, thick, alpha, steps)
+	local prev
+	for s = 0, steps do
+		local u = s / steps
+		local a = a0 + (a1 - a0) * u
+		local pt = Vector3.new(origin.X + math.cos(a) * rad, origin.Y, origin.Z + math.sin(a) * rad)
+		if prev then
+			line3(prev, pt, gradAlong(u + now * 0.4, Config.HitRingColorA, Config.HitRingColorB), thick, alpha)
+		end
+		prev = pt
+	end
+end
+
 local function renderHitFX(now)
 	fxClock = now
 	for i = #hitSparks, 1, -1 do
 		local p = hitSparks[i]
 		local age = now - p.spawn
-		if p.kind ~= "ring" or age > p.life then
+		if age > p.life then
 			table.remove(hitSparks, i)
 		else
 			local t = age / p.life
@@ -1313,19 +1316,54 @@ local function renderHitFX(now)
 			local rad = p.r0 + (p.r1 - p.r0) * s
 			local fade = t < 0.45 and 1 or (1 - (t - 0.45) / 0.55)
 			local alpha = math.clamp(fade, 0, 1) * 0.92
-			local segs = 48
-			local prev
-			local y = p.pos.Y
-			for k = 0, segs do
-				local a = k / segs * 6.283185307179586
-				local wob = 1 + 0.028 * math.sin(a * 2 + t * 1.6)
-				local rr = rad * wob
-				local pt = Vector3.new(p.pos.X + math.cos(a) * rr, y, p.pos.Z + math.sin(a) * rr)
-				if prev then
-					local col = gradAlong(k / segs + now * 0.45, Config.HitRingColorA, Config.HitRingColorB)
-					line3(prev, pt, col, Config.HitRingThick or 3, alpha)
+			local thick = Config.HitRingThick or 3
+			local kind = p.kind or "Wave"
+			if kind == "Storm" then
+				local core = p.r0 + (p.r1 * 0.28 - p.r0) * (0.55 + 0.45 * math.sin(age * 14))
+				fillCircle(p.pos + Vector3.new(0, 0.35 + 0.12 * math.sin(age * 9), 0), core * 0.22, gradAlong(now * 0.8, Config.HitRingColorA, Config.HitRingColorB), alpha * 0.55)
+				sphereWire(p.pos + Vector3.new(0, 0.4, 0), core * 0.42, now, alpha * 0.7)
+				for n = 1, 8 do
+					local seed = n * 2.17 + p.spawn
+					local ang = seed + age * 11
+					local len = rad * (0.28 + 0.55 * ((age * 4.2 + n) % 1))
+					local lift = math.sin(age * 13 + n) * len * 0.42
+					local tip = Vector3.new(p.pos.X + math.cos(ang) * len, p.pos.Y + 0.35 + lift, p.pos.Z + math.sin(ang) * len)
+					local mid = p.pos:Lerp(tip, 0.45) + Vector3.new(math.sin(age * 22 + n) * 0.28, math.cos(age * 18 + n) * 0.22, math.sin(age * 16 + n) * 0.28)
+					local col = gradAlong(n / 8 + now * 0.6, Config.HitRingColorA, Config.HitRingColorB)
+					line3(p.pos + Vector3.new(0, 0.35, 0), mid, col, thick, alpha)
+					line3(mid, tip, col, math.max(1, thick - 1), alpha * 0.75)
 				end
-				prev = pt
+			elseif kind == "Nova" then
+				drawHitRing(p.pos, rad, now, t, thick, alpha, 48, 0.02)
+				drawHitRing(p.pos, rad * 0.55, now, t, math.max(1, thick - 1), alpha * 0.55, 32, 0.05)
+				for n = 1, 10 do
+					local a = n / 10 * 6.283185307179586 + t * 0.4
+					local inner = p.pos + Vector3.new(math.cos(a) * rad * 0.12, 0.05, math.sin(a) * rad * 0.12)
+					local up = p.pos + Vector3.new(math.cos(a) * rad * 0.08, 1.6 * (1 - t * 0.35), math.sin(a) * rad * 0.08)
+					line3(inner, up, gradAlong(n / 10 + now * 0.3, Config.HitRingColorA, Config.HitRingColorB), thick, alpha * 0.7)
+				end
+			elseif kind == "Fracture" then
+				for n = 1, 9 do
+					local spin = t * 0.9 + n * 0.12
+					local a0 = n / 9 * 6.283185307179586 + spin
+					local a1 = a0 + 0.42
+					local fly = rad + t * 1.15
+					local y = p.pos.Y + math.sin(t * 3.14) * 0.25
+					drawHitArc(Vector3.new(p.pos.X, y, p.pos.Z), fly, a0, a1, now, thick, alpha * (1 - t * 0.35), 6)
+				end
+			elseif kind == "Ripple" then
+				for w = 0, 2 do
+					local delay = w * 0.22
+					local u = (t - delay) / math.max(0.08, 1 - delay)
+					if u > 0 and u < 1 then
+						local rs = 1 - (1 - u) * (1 - u)
+						local rr = p.r0 + (p.r1 - p.r0) * rs
+						local fa = u < 0.4 and 1 or (1 - (u - 0.4) / 0.6)
+						drawHitRing(p.pos, rr, now, u, thick, alpha * math.clamp(fa, 0, 1) * (1 - w * 0.18), 40, 0.02)
+					end
+				end
+			else
+				drawHitRing(p.pos, rad, now, t, thick, alpha, 48, 0.028)
 			end
 		end
 	end
@@ -1628,8 +1666,7 @@ function dodgeHold.playerBusy(lh)
 	if lh._desiredDodge and not dodgeHold._ourDodge then
 		return "Dodge"
 	end
-	local q = lh._blockInputQueue
-	if type(q) == "table" and #q > 0 then
+	if lh.IsBlocking or lh.IsParrying then
 		return "Block"
 	end
 	return nil
@@ -4977,12 +5014,12 @@ bind(RunService.RenderStepped, function(dt)
 			local a = st.appear
 			if style == "Soul" then
 				renderSoul(model, st.root, radius, yMin, yMax, nil, a, now)
-			elseif style == "Skeleton" then
-				renderSkeleton(model, st.root, nil, a, now)
-			elseif style == "Rift" then
-				renderRift(st.root, radius, yMin, yMax, nil, a, now)
+			elseif style == "Ember" or style == "Skeleton" then
+				renderEmber(model, st.root, radius, yMin, yMax, a, now)
+			elseif style == "Veil" or style == "Rift" then
+				renderVeil(model, st.root, radius, yMin, yMax, a, now)
 			else
-				renderWeave(st.root, radius, yMin, yMax, nil, a, now)
+				renderCurrent(model, st.root, radius, yMin, yMax, a, now)
 			end
 		end
 	end
@@ -5513,7 +5550,7 @@ function genv._DGAP.buildUI(ctx)
 	feature(apBase, {
 		Title = "AutoParry",
 		Flag = "DG_Enabled",
-		Desc = "Turns the whole script on or off.",
+		Desc = "Enables or disables the script.",
 		get = function()
 			return Config.Enabled
 		end,
@@ -5544,11 +5581,11 @@ function genv._DGAP.buildUI(ctx)
 			applyPreset("Legit")
 		end,
 	})
-	disc(apBase, "Buttons only. Config load does not apply a preset.")
+	disc(apBase, "Applies Blatant, SemiLegit or Legit values.")
 
 	apBase:Divider()
 	apBase:Header({ Name = "Priority" })
-	disc(apBase, "If several options fit, higher slot wins.")
+	disc(apBase, "Picks which counter to use first when more than one fits.")
 	local priOpts = { "Heavy", "Light", "Dodge+Attack", "Parry", "Jump" }
 	els.DG_Priority1 = apBase:Dropdown({
 		Name = "1st",
@@ -5603,7 +5640,7 @@ function genv._DGAP.buildUI(ctx)
 
 	local apChance = AutoParry:Section({ Side = "Left" })
 	apChance:Header({ Name = "Chances" })
-	disc(apChance, "Miss = eat the hit. No dodge backup on parry miss, no per-frame reroll.")
+	disc(apChance, "Chance that dodge, parry or block actually happens.")
 	slider(apChance, {
 		Name = "Dodge Chance",
 		Flag = "DG_DodgeChance",
@@ -5611,7 +5648,7 @@ function genv._DGAP.buildUI(ctx)
 		Min = 0,
 		Max = 1,
 		Precision = 2,
-		Desc = "Chance to dodge when no interrupt is taken.",
+		Desc = "Chance to dodge an incoming hit.",
 		Callback = function(v)
 			Config.DodgeChance = v
 		end,
@@ -5623,7 +5660,7 @@ function genv._DGAP.buildUI(ctx)
 		Min = 0,
 		Max = 1,
 		Precision = 2,
-		Desc = "Chance to parry after interrupts.",
+		Desc = "Chance to parry an incoming hit.",
 		Callback = function(v)
 			Config.ParryChance = v
 		end,
@@ -5635,7 +5672,7 @@ function genv._DGAP.buildUI(ctx)
 		Min = 0,
 		Max = 1,
 		Precision = 2,
-		Desc = "Chance to hold block instead of parry.",
+		Desc = "Chance to hold block instead of a tap parry.",
 		Callback = function(v)
 			Config.IntentionalBlockChance = v
 		end,
@@ -5693,7 +5730,7 @@ function genv._DGAP.buildUI(ctx)
 			Config.Defensive = v
 		end,
 	}, ctx.flag("DG_Defensive"))
-	disc(apDef, "Auto: dual-imp weapon and their Light is faster. No dodge-into-them counters.")
+	disc(apDef, "Stops counters and only parries or dodges.")
 	slider(apDef, {
 		Name = "Low Posture",
 		Flag = "DG_LowDefensePosture",
@@ -5706,7 +5743,7 @@ function genv._DGAP.buildUI(ctx)
 			Config.LowDefensePosture = v
 		end,
 	})
-	disc(apDef, "Full defense (parry/dodge only, no counters) when remaining posture is this % or lower. 0 = off.")
+	disc(apDef, "Parry and dodge only when remaining posture is at or below this percent. 0 turns it off.")
 
 	local apPlay = AutoParry:Section({ Side = "Right" })
 	apPlay:Header({ Name = "AutoPlay" })
@@ -5846,7 +5883,7 @@ function genv._DGAP.buildUI(ctx)
 		Max = 0.2,
 		Precision = 3,
 		Suffix = "s",
-		Desc = "How early to parry.",
+		Desc = "How early the parry starts.",
 		Callback = function(v)
 			Config.ParryLead = v
 		end,
@@ -5859,7 +5896,7 @@ function genv._DGAP.buildUI(ctx)
 		Max = 0.4,
 		Precision = 3,
 		Suffix = "s",
-		Desc = "How early to dodge.",
+		Desc = "How early the dodge starts.",
 		Callback = function(v)
 			Config.DodgeLead = v
 		end,
@@ -5883,7 +5920,7 @@ function genv._DGAP.buildUI(ctx)
 		Min = 0,
 		Max = 2,
 		Precision = 2,
-		Desc = "Hit range padding.",
+		Desc = "Extra reach on your hits.",
 		Callback = function(v)
 			Config.ReachPad = v
 		end,
@@ -5901,7 +5938,7 @@ function genv._DGAP.buildUI(ctx)
 			Config.CustomCombo = v == "Custom"
 		end,
 	}, ctx.flag("DG_ComboMode"))
-	disc(apCombo, "Fastest skips to 01 if needed. GameCombo never skips. Custom = slots.")
+	disc(apCombo, "Chooses which Light or Heavy in the combo to use.")
 
 	-- ════════════════════════════════ Attack ═══════════════════════════════
 	if Attack then
@@ -5910,7 +5947,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(atL, {
 			Title = "Attack Helper",
 			Flag = "DG_AttackHelper",
-			Desc = "Hits after they parry, block, or miss.",
+			Desc = "Attacks after they parry, block, dodge or miss.",
 			get = function()
 				return Config.AttackHelper
 			end,
@@ -5947,7 +5984,7 @@ function genv._DGAP.buildUI(ctx)
 				notify("AH", "Legit")
 			end,
 		})
-		disc(atL, "Buttons only. Does not overwrite on config load.")
+		disc(atL, "Applies SemiLegit or Legit helper values.")
 		boolToggle(atL, "Perfect Dodge Counter", "DG_PerfectDodgeCounter", function()
 			return Config.PerfectDodgeCounter
 		end, function(v)
@@ -5958,7 +5995,7 @@ function genv._DGAP.buildUI(ctx)
 		end, function(v)
 			Config.AHPunishBlock = v
 		end, "Hit when they hold block.")
-		disc(atL, "Uses Defensive and Low Posture. Skips hits they can parry.")
+		disc(atL, "Does not punish if Defensive or Low Posture is active.")
 		boolToggle(atL, "Punish Whiff", "DG_AHPunishWhiff", function()
 			return Config.AHPunishWhiff
 		end, function(v)
@@ -5973,7 +6010,7 @@ function genv._DGAP.buildUI(ctx)
 			return Config.JumpAttackCounter
 		end, function(v)
 			Config.JumpAttackCounter = v
-		end, "Jump slam as a counter. Off by default.")
+		end, "Jump slam as a counter.")
 		slider(atL, {
 			Name = "Helper Cooldown",
 			Flag = "DG_AHCooldown",
@@ -5982,7 +6019,7 @@ function genv._DGAP.buildUI(ctx)
 			Max = 0.6,
 			Precision = 2,
 			Suffix = "s",
-			Desc = "Wait between helper hits.",
+			Desc = "Minimum time between helper attacks.",
 			Callback = function(v)
 				Config.AHCooldown = v
 			end,
@@ -5994,7 +6031,7 @@ function genv._DGAP.buildUI(ctx)
 			Min = 0,
 			Max = 1,
 			Precision = 2,
-			Desc = "How often helper acts.",
+			Desc = "Chance that helper attacks.",
 			Callback = function(v)
 				Config.AHChance = v
 			end,
@@ -6003,7 +6040,7 @@ function genv._DGAP.buildUI(ctx)
 			return Config.AHHumanDelay
 		end, function(v)
 			Config.AHHumanDelay = v
-		end, "Random wait on helper. Uses Delay Min/Max.")
+		end, "Random wait before helper attacks.")
 		slider(atL, {
 			Name = "Block Hold",
 			Flag = "DG_AHBlockHold",
@@ -6012,7 +6049,7 @@ function genv._DGAP.buildUI(ctx)
 			Max = 0.25,
 			Precision = 2,
 			Suffix = "s",
-			Desc = "Wait into their block before hitting.",
+			Desc = "Wait after they start blocking before you hit.",
 			Callback = function(v)
 				Config.AHBlockHold = v
 			end,
@@ -6025,7 +6062,7 @@ function genv._DGAP.buildUI(ctx)
 			Max = 1,
 			Precision = 2,
 			Suffix = "s",
-			Desc = "Wait before punishing a miss.",
+			Desc = "Wait after they miss before you hit.",
 			Callback = function(v)
 				Config.AHWhiffGate = v
 			end,
@@ -6036,7 +6073,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(atDelay, {
 			Title = "No Delay",
 			Flag = "DG_NoDelay",
-			Desc = "Starts attacks faster on the client.",
+			Desc = "Starts your attacks sooner on the client.",
 			get = function()
 				return Config.NoDelay
 			end,
@@ -6146,7 +6183,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(mvSpeed, {
 			Title = "Speed",
 			Flag = "DG_Speed",
-			Desc = "Moves you faster.",
+			Desc = "Increases walk speed.",
 			get = function()
 				return Config.Speed
 			end,
@@ -6171,7 +6208,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(mvClip, {
 			Title = "NoClip",
 			Flag = "DG_NoClip",
-			Desc = "Walk through walls.",
+			Desc = "Lets you walk through walls.",
 			get = function()
 				return Config.NoClip
 			end,
@@ -6185,7 +6222,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(mvSlow, {
 			Title = "No Slowdown",
 			Flag = "DG_NoSlowdown",
-			Desc = "No slow from hits or actions.",
+			Desc = "Removes slow from hits and actions.",
 			get = function()
 				return Config.NoSlowdown
 			end,
@@ -6199,7 +6236,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(mvStun, {
 			Title = "No Stun",
 			Flag = "DG_NoStun",
-			Desc = "Ignore stagger.",
+			Desc = "Ignores stagger.",
 			get = function()
 				return Config.NoStun
 			end,
@@ -6213,7 +6250,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(mvGod, {
 			Title = "God Mode",
 			Flag = "DG_GodMode",
-			Desc = "Always dodge iframe.",
+			Desc = "Keeps dodge iframe on.",
 			get = function()
 				return Config.GodMode
 			end,
@@ -6231,7 +6268,7 @@ function genv._DGAP.buildUI(ctx)
 			Min = 0.5,
 			Max = 3,
 			Precision = 2,
-			Desc = "Dodge slide speed. 1 = vanilla.",
+			Desc = "Dodge slide speed.",
 			Callback = function(v)
 				Config.DodgeSpeed = v
 			end,
@@ -6244,7 +6281,7 @@ function genv._DGAP.buildUI(ctx)
 			Max = 1.5,
 			Precision = 2,
 			Suffix = "s",
-			Desc = "Dodge stamina regen. 0.4 = vanilla.",
+			Desc = "Time before you can dodge again.",
 			Callback = function(v)
 				Config.DodgeCooldown = v
 			end,
@@ -6258,7 +6295,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(vsL, {
 			Title = "Target ESP",
 			Flag = "DG_Visuals",
-			Desc = "ESP on the nearest enemies.",
+			Desc = "Draws ESP on nearby enemies.",
 			get = function()
 				return Config.Visuals
 			end,
@@ -6276,6 +6313,7 @@ function genv._DGAP.buildUI(ctx)
 				end
 			end,
 		}, ctx.flag("DG_EspStyle"))
+		disc(vsL, "How the ESP is drawn on the target.")
 		slider(vsL, {
 			Name = "Speed",
 			Flag = "DG_EspSpeed",
@@ -6322,7 +6360,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(vsHit, {
 			Title = "Hitbox",
 			Flag = "DG_Hitbox",
-			Desc = "Shows their attack box.",
+			Desc = "Draws their attack hitbox.",
 			get = function()
 				return Config.Hitbox
 			end,
@@ -6341,7 +6379,7 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitboxPhysics = v
 			end,
 		}, ctx.flag("DG_HitboxPhysics"))
-		disc(vsHit, "Floor = new box each swing, drops. Scatter = air shards.")
+		disc(vsHit, "Floor drops the box. Scatter breaks it in the air.")
 		slider(vsHit, {
 			Name = "Anim Speed",
 			Flag = "DG_HitboxAnimSpeed",
@@ -6389,7 +6427,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(vsTrail, {
 			Title = "Attack Trails",
 			Flag = "DG_AttackTrails",
-			Desc = "Recolors your weapon swing trails.",
+			Desc = "Recolors your swing trails.",
 			get = function()
 				return Config.AttackTrails
 			end,
@@ -6423,7 +6461,7 @@ function genv._DGAP.buildUI(ctx)
 			Max = 2.5,
 			Precision = 2,
 			Suffix = "s",
-			Desc = "How long the trail stays visible.",
+			Desc = "How long the trail stays.",
 			Callback = function(v)
 				Config.TrailLife = v
 			end,
@@ -6460,7 +6498,7 @@ function genv._DGAP.buildUI(ctx)
 			Min = 0,
 			Max = 0.9,
 			Precision = 2,
-			Desc = "How see-through the body is.",
+			Desc = "Body see-through amount.",
 			Callback = function(v)
 				Config.CustomModelTransparency = v
 			end,
@@ -6489,7 +6527,7 @@ function genv._DGAP.buildUI(ctx)
 		feature(vsRing, {
 			Title = "Hit Ring",
 			Flag = "DG_HitRing",
-			Desc = "Ring on a confirmed hit.",
+			Desc = "Draws a mark on the floor when your hit confirms.",
 			get = function()
 				return Config.HitRing
 			end,
@@ -6497,6 +6535,17 @@ function genv._DGAP.buildUI(ctx)
 				Config.HitRing = v
 			end,
 		})
+		vsRing:Dropdown({
+			Name = "Style",
+			Options = HIT_RING_STYLES,
+			Default = Config.HitRingStyle or "Wave",
+			Callback = function(v)
+				if type(v) == "string" then
+					Config.HitRingStyle = v
+				end
+			end,
+		}, ctx.flag("DG_HitRingStyle"))
+		disc(vsRing, "How the hit mark is drawn.")
 		slider(vsRing, {
 			Name = "Life",
 			Flag = "DG_HitRingLife",
@@ -6642,7 +6691,7 @@ function genv._DGAP.buildUI(ctx)
 	if Misc then
 		local msL = Misc:Section({ Side = "Left" })
 		msL:Header({ Name = "Skin Changer" })
-		disc(msL, "Skin per weapon. Reset = Default.")
+		disc(msL, "Picks a skin for each weapon.")
 		boolToggle(msL, "Default Anims", "DG_DefaultAnims", function()
 			return Config.DefaultAnims
 		end, function(v)
@@ -6657,7 +6706,7 @@ function genv._DGAP.buildUI(ctx)
 					applySkin(skin)
 				end
 			end
-		end, "Default ult and execute anims, not the skin ones.")
+		end, "Uses default ultimate and execute animations.")
 		local skinEls = {}
 		for _, wname in weapons do
 			local pack = catalog[wname]
