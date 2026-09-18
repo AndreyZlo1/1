@@ -1340,7 +1340,7 @@ local function glassLerp(rest, land, p)
 end
 
 local function renderMirror(boxCF, size, vis, now, shards, physics, floorY, restore, form, out, lie, sink)
-	if vis <= 0.02 or not shards or #shards == 0 then
+	if vis <= 0.02 or not shards or #shards == 0 or typeof(boxCF) ~= "CFrame" or typeof(size) ~= "Vector3" then
 		return
 	end
 	local h = size * 0.5
@@ -2212,19 +2212,45 @@ function dodgeHold.ahGate()
 	return ok
 end
 
-function dodgeHold.ahHd(remain, needRemain)
+function dodgeHold.swingU(key)
+	local swing = dodgeHold._jitSwing
+	if type(swing) ~= "table" then
+		return 0.5
+	end
+	swing.jit = swing.jit or {}
+	if type(swing.jit[key]) ~= "number" then
+		swing.jit[key] = rng:NextNumber()
+	end
+	return swing.jit[key]
+end
+
+function dodgeHold.hdFit(remain, need, on)
 	if Config.NoDelay then
 		return 0
 	end
-	if not Config.AHHumanDelay and not Config.HumanDelay then
-		return 0
+	local micro = dodgeHold.swingU("wait") * 0.018
+	local human = 0
+	if on then
+		local lo = Config.HumanDelayMin or 0.016
+		local hi = Config.HumanDelayMax or 0.045
+		if hi < lo then
+			hi = lo
+		end
+		human = lo + rng:NextNumber() * (hi - lo)
 	end
-	local lo = Config.HumanDelayMin or 0.016
-	local hi = Config.HumanDelayMax or 0.045
-	if hi < lo then
-		hi = lo
+	local d = micro + human
+	local slack = (remain or 0) - (need or 0)
+	if slack <= d + 0.012 then
+		if slack <= micro + 0.012 then
+			return 0
+		end
+		return micro
 	end
-	return lo + rng:NextNumber() * (hi - lo)
+	return d
+end
+
+function dodgeHold.ahHd(remain, needRemain)
+	return dodgeHold.hdFit(remain, needRemain, Config.AHHumanDelay or Config.HumanDelay)
 end
 
 function dodgeHold.parryAt(blockAge, ourHit)
@@ -2996,15 +3022,7 @@ dbg = {
 }
 
 dbg._hd = function(remain, needRemain)
-	if Config.NoDelay or not Config.HumanDelay then
-		return 0
-	end
-	local lo = Config.HumanDelayMin or 0.016
-	local hi = Config.HumanDelayMax or 0.045
-	if hi < lo then
-		hi = lo
-	end
-	return lo + rng:NextNumber() * (hi - lo)
+	return dodgeHold.hdFit(remain, needRemain, Config.HumanDelay)
 end
 
 dbg._note = function(kind)
@@ -3269,7 +3287,7 @@ local function tryAttackHelper(lh, threat)
 			return false
 		end
 		if not skipDelay then
-			local delay = dodgeHold.ahHd(0.22, 0.06)
+			local delay = dodgeHold.ahHd(remain or 0.22, 0.05)
 			if delay > 0.01 then
 				dodgeHold.ahAt = now + delay
 				dodgeHold.ahPend = { name = name, tag = tag, model = model, root = root, remain = remain, predPos = predPos, fromPos = fromPos }
@@ -3550,8 +3568,9 @@ local function tryAttackHelper(lh, threat)
 						end
 					end
 				end
-				local blocking = model:GetAttribute("IsBlocking") == true or model:GetAttribute("ClientIsBlocking") == true or (handler and handler.IsBlocking == true) or blockingAnim == true
-				if blocking then
+				local flagBlock = model:GetAttribute("IsBlocking") == true or model:GetAttribute("ClientIsBlocking") == true or (handler and handler.IsBlocking == true)
+				local blocking = flagBlock or blockingAnim == true
+				if flagBlock or blockingAnim then
 					if blockingAnim and (blockAge or 1) < 0.07 and blockSince[model] and (now - blockSince[model]) > 0.12 then
 						blockSince[model] = now
 						dodgeHold.parryWatch = dodgeHold.parryWatch or {}
@@ -3585,13 +3604,14 @@ local function tryAttackHelper(lh, threat)
 							impN = 1,
 						}, lh)
 					end
-				else
+				end
+				if not flagBlock then
 					local started = blockSince[model]
 					if started then
 						local held = now - started
 						blockSince[model] = nil
 						blockPunished[model] = nil
-						if held >= 0.12 and held <= 0.34 then
+						if held >= 0.18 and held <= 0.55 then
 							blockPunishUntil[model] = now + 0.22
 						end
 					end
@@ -3628,7 +3648,7 @@ local function tryAttackHelper(lh, threat)
 						dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":swing", string.format("block+swing no punish jump=%s swing=%s sa=%.0f atk=%s", tostring(jumping), tostring(swinging), (threat and threat.model == model and threat.superArmor) or 0, tostring(threat and threat.model == model and threat.attack)), fakeB, lh)
 					elseif locked then
 						dodgeHold.once("PUNISH_SKIP", model, string.format("parryLock hold=%.3f age=%.3f", holdT, replicaAge), fakeB, lh)
-					elseif blocking then
+					elseif flagBlock then
 						if replicaAge < 0.233 then
 							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":parry", string.format("stillParry age=%.3f left=%.3f ourHit=%.3f retapCover=%.3f cd=0", replicaAge, math.max(0, 0.233 - replicaAge), ourHit, replicaAge + 0.466), fakeB, lh)
 						else
@@ -4076,6 +4096,7 @@ bind(RunService.RenderStepped, function(dt)
 	dodgeHold.defNow = threat and dodgeHold.defensive(lh, threat.weapon) or false
 	dodgeHold.turtleNow = dodgeHold.turtle(lh)
 	dodgeHold.ultHot = (threat and (tostring(threat.attack or "") == "Ultimate" or dodgeHold.ultReady(threat.model))) or false
+	dodgeHold._jitSwing = threat and threat.swing or nil
 	local now = os.clock()
 	stepCosmetics(now, lh)
 	stepTrails(lh)
@@ -4400,6 +4421,8 @@ bind(RunService.RenderStepped, function(dt)
 		if parryLead <= 0 then
 			parryLead = math.clamp(parryDur * 0.5, 0.06, 0.14)
 		end
+		parryLead = parryLead + (dodgeHold.swingU("pLead") - 0.5) * 0.05
+		parryLead = math.clamp(parryLead, 0.085, math.max(0.09, parryDur - 0.055))
 		if ping > 0.35 then
 			parryLead += 0.02
 		end
@@ -4407,8 +4430,12 @@ bind(RunService.RenderStepped, function(dt)
 		if type(dodgeLead) ~= "number" or dodgeLead < 0.08 then
 			dodgeLead = 0.22
 		end
-		if dodgeLead > DODGE_IFRAME then
-			dodgeLead = DODGE_IFRAME
+		dodgeLead = dodgeLead + (dodgeHold.swingU("dLead") - 0.5) * 0.06
+		if dodgeLead > DODGE_IFRAME - 0.045 then
+			dodgeLead = DODGE_IFRAME - 0.045
+		end
+		if dodgeLead < 0.165 then
+			dodgeLead = 0.165
 		end
 		local facing = isFacing(lh.Root, threat.root.Position, Config.FaceCone or 38)
 		if not facing and threat.swing and not dbg.seen[threat.swing.uid .. ":face"] then
@@ -4438,7 +4465,7 @@ bind(RunService.RenderStepped, function(dt)
 			dbg.seen[threat.swing.uid .. ":plan"] = true
 			local hv = bestOfKind(lh, threat, "Heavy", true)
 			local lv = bestOfKind(lh, threat, "Light", true)
-			clog("BREAK_PLAN", string.format("kind=%s name=%s %s %s %s remain=%.3f esc=%s dist=%.2f facing=%s pressed=%s cur=%s canStart=%s def=%s dual=%s", tostring(plan and plan.kind), tostring(plan and plan.rec and plan.rec.name), dodgeHold.whyFit(lh, threat, "Light01"), dodgeHold.whyFit(lh, threat, "Heavy01"), dodgeHold.whyFit(lh, threat, "Heavy02"), threat.remain, type(threat.cancelRemain) == "number" and string.format("%.3f", threat.cancelRemain) or "-", jumpDist, tostring(facing), tostring(pressed.kind), curActName(lh), tostring(canStartInterrupt(lh)), tostring(dodgeHold.defNow), tostring((type(threat.weapon)=="string" and catalog[threat.weapon] and catalog[threat.weapon].dualImp))), threat, lh)
+			clog("BREAK_PLAN", string.format("kind=%s name=%s %s %s %s remain=%.3f esc=%s dist=%.2f facing=%s pressed=%s cur=%s canStart=%s def=%s dual=%s pLead=%.3f dLead=%.3f", tostring(plan and plan.kind), tostring(plan and plan.rec and plan.rec.name), dodgeHold.whyFit(lh, threat, "Light01"), dodgeHold.whyFit(lh, threat, "Heavy01"), dodgeHold.whyFit(lh, threat, "Heavy02"), threat.remain, type(threat.cancelRemain) == "number" and string.format("%.3f", threat.cancelRemain) or "-", jumpDist, tostring(facing), tostring(pressed.kind), curActName(lh), tostring(canStartInterrupt(lh)), tostring(dodgeHold.defNow), tostring((type(threat.weapon)=="string" and catalog[threat.weapon] and catalog[threat.weapon].dualImp)), parryLead, dodgeLead), threat, lh)
 		end
 		local waiting = false
 		local coverRemain = ((threat.impN or 1) > 1) and (threat.lastRemain or threat.remain) or threat.remain
@@ -4806,7 +4833,7 @@ bind(RunService.RenderStepped, function(dt)
 	local style = Config.EspStyle
 	local hbLive = Config.Hitbox and threat and threat.will and not threat.windup
 	for model, st in pinStore do
-		if st.appear > 0.01 and st.root and not (hbLive and threat.model == model) then
+		if st.appear > 0.01 and st.root then
 			local radius, yMin, yMax = charBounds(model, st.root)
 			local a = st.appear
 			if style == "Soul" then
@@ -4860,12 +4887,15 @@ bind(RunService.RenderStepped, function(dt)
 			st.hbKey = threat.key
 			st.hbTgtCF = threat.boxCF
 			st.hbTgtSize = threat.size
-			if not st.hbCF then
+			if not st.hbCF or typeof(st.hbCF) ~= "CFrame" or typeof(threat.boxCF) ~= "CFrame" then
 				st.hbCF = threat.boxCF
 				st.hbSize = threat.size
-			else
+			elseif typeof(st.hbSize) == "Vector3" and typeof(threat.size) == "Vector3" then
 				st.hbCF = st.hbCF:Lerp(threat.boxCF, math.min(1, dt * 10))
 				st.hbSize = st.hbSize:Lerp(threat.size, math.min(1, dt * 10))
+			else
+				st.hbCF = threat.boxCF
+				st.hbSize = threat.size
 			end
 			if floorPhys and (not st.hbFY or now - (st.hbFYAt or 0) > 0.12) then
 				st.hbFY = hitboxFloorY(st.hbCF)
@@ -4875,10 +4905,10 @@ bind(RunService.RenderStepped, function(dt)
 			st.hbHold = 0.12
 			st.hbForm = math.min(1, (st.hbForm or 0) + dt / inT)
 		else
-			if st.hbCF and st.hbTgtCF then
+			if st.hbCF and st.hbTgtCF and typeof(st.hbCF) == "CFrame" and typeof(st.hbTgtCF) == "CFrame" then
 				st.hbCF = st.hbCF:Lerp(st.hbTgtCF, math.min(1, dt * 7))
 			end
-			if st.hbSize and st.hbTgtSize then
+			if st.hbSize and st.hbTgtSize and typeof(st.hbSize) == "Vector3" and typeof(st.hbTgtSize) == "Vector3" then
 				st.hbSize = st.hbSize:Lerp(st.hbTgtSize, math.min(1, dt * 7))
 			end
 			if (st.hbForm or 0) < 0.995 and (st.hbOut or 0) == 0 and (st.hbLie or 0) == 0 then
