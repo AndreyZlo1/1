@@ -3646,15 +3646,18 @@ local function tryAttackHelper(lh, threat)
 					elseif locked then
 						dodgeHold.once("PUNISH_SKIP", model, string.format("parryLock hold=%.3f age=%.3f", holdT, replicaAge), fakeB, lh)
 					elseif flagBlock then
-						if replicaAge < 0.233 then
-							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":parry", string.format("stillParry age=%.3f left=%.3f ourHit=%.3f retapCover=%.3f cd=0", replicaAge, math.max(0, 0.233 - replicaAge), ourHit, replicaAge + 0.466), fakeB, lh)
-						else
+						if replicaAge >= 0.233 then
 							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":hold", string.format("holding age=%.3f (IsParrying=false Light=Block)", replicaAge), fakeB, lh)
+						elseif not inStand then
+							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":range", string.format("no standing d=%.2f reach=%.2f", d, ourReach(lh, standL)), fakeB, lh)
+						elseif not canQueueAttack(lh) then
+							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":q", "canQueue=false " .. curActName(lh), fakeB, lh)
+						elseif fire(standL, "BLOCKPUNISH", model, root, 0, nil, nil, true) then
+							blockPunished[model] = true
+							return true
 						end
 					elseif blockPunishUntil[model] and now < blockPunishUntil[model] then
-						if replicaAge > 0.01 and replicaAge < 0.22 then
-							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":win", string.format("wait window age=%.3f ourHit=%.3f", replicaAge, ourHit), fakeB, lh)
-						elseif not inStand then
+						if not inStand then
 							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":range", string.format("no standing d=%.2f reach=%.2f (no dashatk on parry)", d, ourReach(lh, standL)), fakeB, lh)
 						elseif not canQueueAttack(lh) then
 							dodgeHold.once("PUNISH_SKIP", tostring(model) .. ":q", "canQueue=false " .. curActName(lh), fakeB, lh)
