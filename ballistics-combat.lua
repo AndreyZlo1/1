@@ -3902,8 +3902,107 @@ function install_extra_hooks()
             return p
         end
 
+        local function occupant_of(seat)
+            if not seat then
+                return nil
+            end
+            local ov = seat:FindFirstChild("Occupant")
+            if ov and ov:IsA("ObjectValue") then
+                return ov.Value
+            end
+            if seat:IsA("VehicleSeat") or seat:IsA("Seat") then
+                return seat.Occupant
+            end
+            return nil
+        end
+
+        local function occupant_char(occ)
+            if not occ then
+                return nil
+            end
+            if occ:IsA("Model") then
+                return occ
+            end
+            if occ:IsA("Humanoid") then
+                return occ.Parent
+            end
+            return nil
+        end
+
+        local function is_driver_seat(seat)
+            return seat ~= nil and type(seat.Name) == "string" and string.find(seat.Name, "Driver", 1, true) ~= nil
+        end
+
+        local function driver_taken(seat)
+            if not is_driver_seat(seat) then
+                return false
+            end
+            local ch = occupant_char(occupant_of(seat))
+            if not ch then
+                return false
+            end
+            return ch ~= LP.Character
+        end
+
+        local function take_wheel(seat)
+            local veh = vehicle_of(seat)
+            if not veh then
+                return
+            end
+            task.defer(function()
+                local shared = ReplicatedStorage:FindFirstChild("Shared")
+                local vf = shared and shared:FindFirstChild("Vehicle")
+                local dcInst = vf and vf:FindFirstChild("DriverController")
+                local vcmInst = shared and shared:FindFirstChild("VehicleConfigManager")
+                local DC, trans
+                if dcInst then
+                    local ok, mod = pcall(require, dcInst)
+                    if ok then
+                        DC = mod
+                    end
+                end
+                if vcmInst then
+                    local ok, VCM = pcall(require, vcmInst)
+                    if ok and type(VCM) == "table" and type(VCM.GetVehicleConfigFromName) == "function" then
+                        local cfg = VCM.GetVehicleConfigFromName(veh.Name)
+                        trans = cfg and cfg.Transmission
+                    end
+                end
+                if DC then
+                    if type(DC.IsDriving) ~= "function" or not DC.IsDriving() then
+                        pcall(DC.Attach, veh, seat, trans, LP, { deferInputs = false })
+                    end
+                    if type(DC.EnableInputs) == "function" then
+                        pcall(DC.EnableInputs)
+                    end
+                end
+                local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+                local Vehicle = remotes and remotes:FindFirstChild("Vehicle")
+                if Vehicle then
+                    pcall(function()
+                        Vehicle:FireServer("SeatReady")
+                    end)
+                    pcall(function()
+                        Vehicle:FireServer("DriveReady")
+                    end)
+                end
+                local Inputs = ReplicatedStorage:FindFirstChild("Inputs")
+                local vdc = Inputs and Inputs:FindFirstChild("VehicleDriverContext")
+                if vdc then
+                    vdc.Enabled = true
+                end
+                local vctx = Inputs and Inputs:FindFirstChild("VehicleContext")
+                if vctx then
+                    vctx.Enabled = true
+                end
+            end)
+        end
+
         local function engine_sit(hum, seat)
             if not (hum and seat) then
+                return false
+            end
+            if driver_taken(seat) then
                 return false
             end
             local char = hum.Parent
@@ -3918,6 +4017,9 @@ function install_extra_hooks()
             local occ = seat:FindFirstChild("Occupant")
             if occ and occ:IsA("ObjectValue") and char then
                 occ.Value = char
+            end
+            if is_driver_seat(seat) then
+                take_wheel(seat)
             end
             return hum.SeatPart == seat or (occ and occ.Value == char)
         end
@@ -3994,11 +4096,17 @@ function install_extra_hooks()
             if not CFG.VehicleStealer then
                 return
             end
-            local wasHidden = prompt.MaxActivationDistance < 1 or prompt.Enabled == false
             if origDist[prompt] == nil then
                 local d = prompt.MaxActivationDistance
                 origDist[prompt] = (type(d) == "number" and d > 0) and d or 32
             end
+            local seat = seat_of_prompt(prompt)
+            if driver_taken(seat) then
+                prompt.Enabled = false
+                prompt.MaxActivationDistance = 0
+                return
+            end
+            local wasHidden = prompt.MaxActivationDistance < 1 or prompt.Enabled == false
             if wasHidden then
                 hiddenPrompts[prompt] = true
             end
@@ -4022,6 +4130,15 @@ function install_extra_hooks()
             end
             watching[prompt] = true
             unlock_prompt(prompt)
+            local seat = seat_of_prompt(prompt)
+            local ov = seat and seat:FindFirstChild("Occupant")
+            if ov and ov:IsA("ObjectValue") then
+                bind(ov.Changed:Connect(function()
+                    if CFG.VehicleStealer then
+                        unlock_prompt(prompt)
+                    end
+                end))
+            end
             bind(prompt.Triggered:Connect(function(player)
                 if player ~= LP or not CFG.VehicleStealer then
                     return
