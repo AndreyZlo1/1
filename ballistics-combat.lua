@@ -76,7 +76,7 @@ local CFG = {
     ForceHitDelay = 0,
     SmartInstantRefDist = 400,
     SmartInstantRefDelay = 0.08,
-    SmartInstantMaxDelay = 0.22,
+    SmartInstantMaxDelay = 0.8,
     ForceHitPart = "auto",
 
     MultiPoint = true,
@@ -89,7 +89,7 @@ local CFG = {
     MPMaxTargets = 1,
     VisCacheSec = 0.1,
     PickRate = 0.04,
-    EspPerFrame = 40,
+    EspPerFrame = 16,
     NoRecoil = true,
     InstantEquip = true,
     EquipAnimSpeed = 8,
@@ -116,7 +116,7 @@ local CFG = {
     VehicleSpeed = true,
     VehicleSpeedMul = 2.2,
     StaffDetect = true,
-    StaffKick = true,
+    StaffKick = false,
     StaffNotify = true,
     StaffWarning = true,
 
@@ -252,6 +252,7 @@ local dirScratch = {}
 local dirCount = 4
 local roster = {}
 local rosterN = 0
+local enemyOf = {}
 local charRefs = {}
 local aliveFrame = 0
 local vpX, vpY = 0, 0
@@ -328,6 +329,7 @@ local function roster_remove(player)
     moveHint[player] = nil
     lastShotAt[player] = nil
     aimTrackOf[player] = nil
+    enemyOf[player] = nil
 end
 
 local function roster_rebuild()
@@ -361,10 +363,6 @@ function F.char_ref(player)
     local r = charRefs[player]
     if r and r.char == char and char then
         if r.hrp and r.hrp.Parent then
-            if r.toolSeq ~= aliveFrame then
-                r.toolSeq = aliveFrame
-                r.tool = char:FindFirstChildWhichIsA("Tool")
-            end
             return r
         end
     end
@@ -380,7 +378,8 @@ function F.char_ref(player)
     r.stance = r.folder and r.folder:FindFirstChild("Stance")
     r.headHp = r.head and r.head:FindFirstChild("Health")
     r.torsoHp = r.torso and r.torso:FindFirstChild("Health")
-    r.tool = char and char:FindFirstChildWhichIsA("Tool")
+    r.tool = nil
+    r.toolAt = -1
     r.toolSeq = aliveFrame
     r.aliveSeq = -1
     r.alive = false
@@ -472,16 +471,26 @@ function F.alive(player)
 end
 
 function F.enemy(player)
-    if player == LP then
+    if player == nil or player == LP then
         return false
     end
-    if not F.alive(player) then
-        return false
+    if CFG.IgnoreTeammates then
+        local rec = enemyOf[player]
+        local my = LP.Team
+        local their = player.Team
+        if rec and rec.my == my and rec.their == their then
+            if not rec.enemy then
+                return false
+            end
+        else
+            local isEnemy = not (my and their and my == their)
+            enemyOf[player] = { my = my, their = their, enemy = isEnemy }
+            if not isEnemy then
+                return false
+            end
+        end
     end
-    if CFG.IgnoreTeammates and LP.Team and player.Team and LP.Team == player.Team then
-        return false
-    end
-    return true
+    return F.alive(player)
 end
 
 function F.veh_part(player)
@@ -807,7 +816,7 @@ function F.prep_frame(fromFire)
     end
     visCam = Cam
     local selfRef = F.char_ref(LP)
-    visTool = selfRef and selfRef.tool
+    visTool = F.refresh_tool(selfRef)
     if Cam then
         local vp = Cam.ViewportSize
         vpX, vpY = vp.X, vp.Y
@@ -1257,7 +1266,7 @@ function F.pick_silent_target(origin, maxDist, needVis, fovDeg, boneName, allowM
             speed = CFG.PredictFixedSpeed or 850
         else
             local selfRef = F.char_ref(LP)
-            speed, drag = F.weapon_profile(selfRef and selfRef.tool, 1, 1)
+            speed, drag = F.weapon_profile(F.refresh_tool(selfRef), 1, 1)
         end
         local pred, claim = F.predict_aim(cand.player, cand.bone, origin, nowPos, speed, drag, inVeh)
         aimPos = pred
@@ -1277,10 +1286,23 @@ function F.pick_silent_target(origin, maxDist, needVis, fovDeg, boneName, allowM
 end
 
 
+function F.refresh_tool(r)
+    if not r or not r.char then
+        return nil
+    end
+    local now = clock()
+    if r.tool and r.tool.Parent == r.char and r.toolAt and now - r.toolAt < 0.25 then
+        return r.tool
+    end
+    r.toolAt = now
+    r.tool = r.char:FindFirstChildWhichIsA("Tool")
+    return r.tool
+end
+
 function F.equipped_weapon(player)
     local r = F.char_ref(player)
-    local tool = r and r.tool
-    if tool and tool.Parent == r.char then
+    local tool = F.refresh_tool(r)
+    if tool then
         return tool.Name
     end
     return nil
@@ -1295,7 +1317,8 @@ function F.player_hotbar_slots(player)
     local slots = cached and cached.list or {}
     table.clear(slots)
     local r = F.char_ref(player)
-    local eqName = r and r.tool and r.tool.Parent == r.char and r.tool.Name
+    local tool = F.refresh_tool(r)
+    local eqName = tool and tool.Name
     local backpack = player:FindFirstChild("Backpack")
     if backpack then
         for _, child in backpack:GetChildren() do
@@ -3287,7 +3310,7 @@ local function install_hooks()
                     local dist = typeof(pos) == "Vector3" and typeof(from) == "Vector3" and (pos - from).Magnitude or 0
                     local speed, drag = F.weapon_profile(tool, muzzleIdx, bulletIdx)
                     local t = F.flight_time(dist, speed, drag)
-                    delay = math.clamp(t + F.ping_sec() * 0.5, 0.04, CFG.SmartInstantMaxDelay or 0.22)
+                    delay = math.clamp(t * 0.5, 0.05, CFG.SmartInstantMaxDelay or 0.8)
                 else
                     delay = math.max(delay, F.ping_sec() * 0.5)
                 end
@@ -3536,7 +3559,7 @@ function install_extra_hooks()
                 if animator.playScaledTo then
                     hook_fn(animator, "playScaledTo", "instantEquipScaled", function(orig, self, name, dur, ...)
                         local spd = CFG.EquipAnimSpeed or 8
-                        if CFG.InstantEquip then
+                        if CFG.InstantEquip and (name == "EquipUnfold" or name == "Equip" or name == "Chamber") then
                             local track = self._track and self:_track(name)
                             if track then
                                 self._current = track
@@ -3544,7 +3567,7 @@ function install_extra_hooks()
                             end
                             return
                         end
-                        if spd > 1 then
+                        if spd > 1 and (name == "EquipUnfold" or name == "Equip" or name == "Chamber") then
                             local track = self._track and self:_track(name)
                             if track then
                                 self._current = track
@@ -3623,32 +3646,53 @@ function install_extra_hooks()
     if invMod then
         oki, inv = pcall(require, invMod)
     end
-    if not (oki and type(inv) == "table" and type(inv.equip) == "function") then
-        warn("[CWCombat] InventoryController require failed")
-        return
-    end
-        
-
-    if debug.getupvalue and hookfunction then
+    if oki and type(inv) == "table" and type(inv.equip) == "function" and debug.getupvalue and hookfunction then
         local okD, draw = pcall(debug.getupvalue, inv.equip, 9)
-        if okD and type(draw) == "function" then
-            local okA, awaitLen = pcall(debug.getupvalue, draw, 6)
-            if okA and type(awaitLen) == "function" then
-                local origAwait
-                origAwait = hookfunction(awaitLen, function(track)
-                    if CFG.InstantEquip then
-                        return false
+        if not (okD and type(draw) == "function") then
+            for i = 1, 16 do
+                local okU, uv = pcall(debug.getupvalue, inv.equip, i)
+                if not okU then
+                    break
+                end
+                if type(uv) == "function" then
+                    local okN, n1 = pcall(debug.getupvalue, uv, 1)
+                    if okN and typeof(n1) == "Instance" then
+                        draw = uv
+                        break
                     end
-                    return origAwait(track)
-                end)
-                extraHooks[#extraHooks + 1] = { kind = "fn", target = awaitLen }
-                
-            else
-                warn("[CWCombat] awaitLength upvalue missing")
+                end
             end
-        else
-            warn("[CWCombat] drawTool upvalue missing")
         end
+        local awaitLen
+        if type(draw) == "function" then
+            for i = 1, 16 do
+                local okU, uv = pcall(debug.getupvalue, draw, i)
+                if not okU then
+                    break
+                end
+                if type(uv) == "function" then
+                    local okW, w = pcall(debug.getupvalue, uv, 1)
+                    if okW and type(w) == "table" and type(w.isConscious) == "function" then
+                        awaitLen = uv
+                        break
+                    end
+                end
+            end
+        end
+        if type(awaitLen) == "function" then
+            local origAwait
+            origAwait = hookfunction(awaitLen, function(track)
+                if CFG.InstantEquip then
+                    return false
+                end
+                return origAwait(track)
+            end)
+            extraHooks[#extraHooks + 1] = { kind = "fn", target = awaitLen }
+        else
+            warn("[CWCombat] holdForTrack missing")
+        end
+    elseif not (oki and type(inv) == "table" and type(inv.equip) == "function") then
+        warn("[CWCombat] InventoryController require failed")
     end
 
     do
@@ -4230,9 +4274,14 @@ local function install_movement()
         end
     end
 
+    local noclipDesc
     local function noclip_set(on)
         local char = LP.Character
         if not on then
+            if noclipDesc then
+                noclipDesc:Disconnect()
+                noclipDesc = nil
+            end
             for part, saved in collideSave do
                 if part.Parent then
                     part.CanCollide = saved
@@ -4251,6 +4300,17 @@ local function install_movement()
                 end
                 part.CanCollide = false
             end
+        end
+        if not noclipDesc then
+            noclipDesc = char.DescendantAdded:Connect(function(inst)
+                if inst:IsA("BasePart") then
+                    if collideSave[inst] == nil then
+                        collideSave[inst] = inst.CanCollide
+                    end
+                    inst.CanCollide = false
+                end
+            end)
+            bind(noclipDesc)
         end
     end
 
@@ -4326,6 +4386,10 @@ local function install_movement()
 
     bind(LP.CharacterAdded:Connect(function()
         table.clear(collideSave)
+        if noclipDesc then
+            noclipDesc:Disconnect()
+            noclipDesc = nil
+        end
         task.defer(function()
             if CFG.NoClip then
                 noclip_set(true)
@@ -4397,7 +4461,7 @@ local function install_movement()
     end))
 
     bind(RunService.Heartbeat:Connect(function(dt)
-        if not (CFG.Fly or CFG.NoClip) then
+        if not (CFG.Fly or CFG.Speed or CFG.NoClip) then
             return
         end
         if dt <= 0 then
@@ -4408,6 +4472,13 @@ local function install_movement()
         local char, hum, hrp = hum_hrp()
         if not (char and hum and hrp) or hum.Health <= 0 then
             return
+        end
+        if CFG.NoClip then
+            for part in collideSave do
+                if part.Parent and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
         end
         if hum.Sit or hum.SeatPart then
             return
@@ -4444,6 +4515,17 @@ local function install_movement()
             end
             hrp:ApplyImpulse(V3(0, mass * Workspace.Gravity * dt, 0))
             hrp.AssemblyLinearVelocity = want
+        elseif CFG.Speed then
+            local md = hum.MoveDirection
+            if md.Magnitude > 0.05 then
+                local spd = CFG.SpeedStuds
+                if type(spd) ~= "number" or spd < 1 then
+                    spd = 42
+                end
+                local horiz = md.Unit * spd
+                local vy = hrp.AssemblyLinearVelocity.Y
+                hrp.AssemblyLinearVelocity = V3(horiz.X, vy, horiz.Z)
+            end
         end
     end))
 end
@@ -4968,8 +5050,8 @@ local function buildUI(ctx)
         Name = "Max Delay",
         Flag = "CW_SmartMax",
         Default = CFG.SmartInstantMaxDelay,
-        Min = 0,
-        Max = 0.6,
+        Min = 0.05,
+        Max = 1,
         Precision = 2,
         Suffix = "s",
         Callback = function(v)
@@ -6261,7 +6343,7 @@ local function buildUI(ctx)
     feature(dbg, {
         Title = "Staff Detect",
         Flag = "CW_StaffDetect",
-        Desc = "Other players. CP Admin/Owner/Granted, FlyAllowed, or Grip Studios rank 103+.",
+        Desc = "EXPERIMENTAL",
         get = function()
             return CFG.StaffDetect
         end,
@@ -6273,7 +6355,7 @@ local function buildUI(ctx)
         return CFG.StaffKick
     end, function(v)
         CFG.StaffKick = v
-    end, "Kick and shutdown when staff is found.")
+    end)
     boolToggle(dbg, "Notify", "CW_StaffNotify", function()
         return CFG.StaffNotify
     end, function(v)
@@ -6283,7 +6365,7 @@ local function buildUI(ctx)
         return CFG.StaffWarning
     end, function(v)
         CFG.StaffWarning = v
-    end, "Blinking STAFF DETECTED! above screen center.")
+    end)
     dbg:Header({ Name = "Cold War Combat" })
     dbg:Button({
         Name = "Unload Combat",
