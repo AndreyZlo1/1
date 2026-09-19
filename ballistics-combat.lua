@@ -3013,14 +3013,48 @@ function F.paint_overlay()
     end
 end
 
+local function find_named_mod(root, name)
+    if not root then
+        return nil
+    end
+    local d = root:FindFirstChild(name)
+    if d and d:IsA("ModuleScript") then
+        return d
+    end
+    local ok, desc = pcall(root.GetDescendants, root)
+    if not ok or type(desc) ~= "table" then
+        return nil
+    end
+    for i = 1, #desc do
+        local x = desc[i]
+        if x.Name == name and x:IsA("ModuleScript") then
+            return x
+        end
+    end
+    return nil
+end
+
 local function load_game_modules()
     local ps = LP:WaitForChild("PlayerScripts", 15)
-    local bc = ps and ps:WaitForChild("BallisticsClient", 15)
-    if not bc then
-        error("BallisticsClient missing")
+    local cfInst, hrInst
+    for _ = 1, 40 do
+        cfInst = find_named_mod(ps, "ClientFire")
+        hrInst = find_named_mod(ps, "HitReporter")
+        if cfInst then
+            local ok, mod = pcall(require, cfInst)
+            if ok and type(mod) == "table" and type(mod.fireVolley) == "function" then
+                ClientFire = mod
+                break
+            end
+        end
+        task.wait(0.15)
     end
-    ClientFire = require(bc:WaitForChild("ClientFire"))
-    HitReporter = require(bc:WaitForChild("HitReporter"))
+    if hrInst then
+        local okH, hr = pcall(require, hrInst)
+        if okH then
+            HitReporter = hr
+        end
+    end
     local shared = ReplicatedStorage:WaitForChild("Shared")
     local ballistics = shared:WaitForChild("Ballistics")
     ShotCodec = require(ballistics:WaitForChild("ShotCodec"))
@@ -3038,11 +3072,10 @@ end
 
 local function install_hooks()
     if not ClientFire or type(ClientFire.fireVolley) ~= "function" then
-        warn("[CWCombat] ClientFire.fireVolley not found")
-        return
+        return false
     end
     if origFireVolley then
-        return
+        return true
     end
     if HitReporter and type(HitReporter.sendClaim) == "function" then
         local claimHook = newcclosure(function(seed, impact)
@@ -3312,8 +3345,8 @@ local function install_hooks()
             end)
         end
     end
+    return true
 end
-
 
 local function hook_fn(obj, key, wrapperName, wrap)
     if not (obj and type(obj[key]) == "function") then
@@ -3799,11 +3832,27 @@ function install_extra_hooks()
                 return false
             end
             local ownerId = veh:GetAttribute("OwnerUserId")
-            if type(ownerId) ~= "number" or ownerId == LP.UserId then
+            if type(ownerId) == "number" and ownerId == LP.UserId then
                 return false
             end
             local mode = veh:GetAttribute("LockMode")
-            return mode == "SQUAD" or mode == "FRIENDS"
+            if mode == "SQUAD" or mode == "FRIENDS" then
+                return true
+            end
+            if mode == "EVERYONE" then
+                return false
+            end
+            return type(ownerId) == "number" and ownerId ~= LP.UserId
+        end
+
+        local function hl_parent()
+            if gethui then
+                local ok, h = pcall(gethui)
+                if ok and h then
+                    return h
+                end
+            end
+            return LP:FindFirstChild("PlayerGui") or LP
         end
 
         local function set_hl(veh, on)
@@ -3818,10 +3867,12 @@ function install_extra_hooks()
                     hl.OutlineTransparency = 0.15
                     hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
                     hl.Adornee = veh
-                    hl.Parent = veh
+                    hl.Parent = hl_parent()
                     highlights[veh] = hl
+                else
+                    hl.Adornee = veh
+                    hl.Enabled = true
                 end
-                hl.Enabled = true
             elseif hl then
                 pcall(function()
                     hl:Destroy()
@@ -3836,6 +3887,8 @@ function install_extra_hooks()
             end
         end
 
+        local hiddenPrompts = {}
+
         local function unlock_prompt(prompt)
             if not (prompt and prompt:IsA("ProximityPrompt")) then
                 return
@@ -3843,9 +3896,13 @@ function install_extra_hooks()
             if not CFG.VehicleStealer then
                 return
             end
+            local wasHidden = prompt.MaxActivationDistance < 1 or prompt.Enabled == false
             if origDist[prompt] == nil then
                 local d = prompt.MaxActivationDistance
                 origDist[prompt] = (type(d) == "number" and d > 0) and d or 32
+            end
+            if wasHidden then
+                hiddenPrompts[prompt] = true
             end
             prompt.Enabled = true
             prompt.RequiresLineOfSight = false
@@ -3857,7 +3914,7 @@ function install_extra_hooks()
             end
             local veh = vehicle_of(prompt)
             if veh then
-                set_hl(veh, is_locked_veh(veh))
+                set_hl(veh, hiddenPrompts[prompt] == true or is_locked_veh(veh))
             end
         end
 
@@ -3867,15 +3924,39 @@ function install_extra_hooks()
             end
             watching[prompt] = true
             unlock_prompt(prompt)
-            bind(prompt:GetPropertyChangedSignal("MaxActivationDistance"):Connect(function()
-                if CFG.VehicleStealer and prompt.Parent and prompt.MaxActivationDistance < 1 then
-                    prompt.MaxActivationDistance = origDist[prompt] or 32
-                end
-            end))
             bind(prompt.Destroying:Connect(function()
                 watching[prompt] = nil
                 origDist[prompt] = nil
+                hiddenPrompts[prompt] = nil
             end))
+        end
+
+        local function scan_vehicle_prompts()
+            local tagged = CS:GetTagged("VehiclePrompt")
+            for i = 1, #tagged do
+                watch_prompt(tagged[i])
+            end
+            local seats = CS:GetTagged("FactoryVehicleSeat")
+            for i = 1, #seats do
+                local seat = seats[i]
+                if seat then
+                    if seat:IsA("ProximityPrompt") then
+                        watch_prompt(seat)
+                    else
+                        local p = seat:FindFirstChildWhichIsA("ProximityPrompt", true)
+                        if p then
+                            watch_prompt(p)
+                        end
+                    end
+                end
+            end
+            local vehs = CS:GetTagged("AdoptVehicle")
+            for i = 1, #vehs do
+                local veh = vehs[i]
+                if veh and is_locked_veh(veh) then
+                    set_hl(veh, true)
+                end
+            end
         end
 
         if filtergc and hookfunction then
@@ -3905,10 +3986,22 @@ function install_extra_hooks()
             end
         end
 
-        for _, p in CS:GetTagged("VehiclePrompt") do
-            watch_prompt(p)
-        end
+        scan_vehicle_prompts()
         bind(CS:GetInstanceAddedSignal("VehiclePrompt"):Connect(watch_prompt))
+        bind(CS:GetInstanceAddedSignal("FactoryVehicleSeat"):Connect(function(seat)
+            if not CFG.VehicleStealer or not seat then
+                return
+            end
+            local p = seat:FindFirstChildWhichIsA("ProximityPrompt", true)
+            if p then
+                watch_prompt(p)
+            end
+        end))
+        bind(CS:GetInstanceAddedSignal("AdoptVehicle"):Connect(function(veh)
+            if CFG.VehicleStealer and is_locked_veh(veh) then
+                set_hl(veh, true)
+            end
+        end))
         bind(PPS.PromptTriggered:Connect(function(prompt, player)
             if not CFG.VehicleStealer or player ~= LP then
                 return
@@ -3928,11 +4021,12 @@ function install_extra_hooks()
             end
         end))
         bind(LP.CharacterAdded:Connect(function()
-            clear_hls()
+            task.defer(scan_vehicle_prompts)
         end))
         F.stealer_off = function()
             clear_hls()
         end
+        F.stealer_scan = scan_vehicle_prompts
     end
 
     do
@@ -4117,13 +4211,20 @@ local function install_movement()
 
     F.mv_off = function()
         CFG.Fly, CFG.Speed, CFG.NoClip = false, false, false
-        local _, hum, hrp = hum_hrp()
+        local char, hum, hrp = hum_hrp()
         ground_lock(hum, false)
         if hrp then
             local v = hrp.AssemblyLinearVelocity
             hrp.AssemblyLinearVelocity = V3(0, math.min(v.Y, 0), 0)
         end
         noclip_set(false)
+        local cv = char and char:FindFirstChild("CharacterValues")
+        local sm = cv and cv:FindFirstChild("SpeedMultiplier")
+        if sm and sm:IsA("NumberValue") then
+            local orig = sm:GetAttribute("CWOrig")
+            sm.Value = type(orig) == "number" and orig or 1
+            pcall(sm.SetAttribute, sm, "CWOrig", nil)
+        end
     end
 
     local remotes = ReplicatedStorage:FindFirstChild("Remotes")
@@ -4145,45 +4246,31 @@ local function install_movement()
         return false
     end
     local function should_block_fall()
-        return CFG.Fly == true or CFG.NoFall == true
-    end
-    local fallSink = {
-        Name = "Freefall",
-        ClassName = "RemoteEvent",
-        FireServer = newcclosure(function() end, "ffSink"),
-    }
-    local function patch_freefall_upvalue(fn)
-        local dbg = debug
-        if type(fn) ~= "function" or not (dbg and dbg.getupvalue and dbg.setupvalue) then
-            return false
-        end
-        if isexecutorclosure then
-            local okEx, isEx = pcall(isexecutorclosure, fn)
-            if okEx and isEx then
-                return false
-            end
-        end
-        for i = 1, 24 do
-            local ok, uv = pcall(dbg.getupvalue, fn, i)
-            if not ok then
-                break
-            end
-            if typeof(uv) == "Instance" and uv.Name == "Freefall" and uv.ClassName == "RemoteEvent" then
-                if pcall(dbg.setupvalue, fn, i, fallSink) then
-                    extraHooks[#extraHooks + 1] = { kind = "uv", fn = fn, idx = i, orig = uv }
-                    return true
-                end
-            end
-        end
-        return false
+        return CFG.NoFall == true and CFG.Fly ~= true
     end
     if ff and ff:IsA("RemoteEvent") and hookfunction then
         local orig
-        local proxy = newcclosure(function(self, ...)
-            if should_block_fall() and is_freefall_remote(self) then
+        local proxy = newcclosure(function(self, yVel, height, ...)
+            if not is_freefall_remote(self) then
+                return orig(self, yVel, height, ...)
+            end
+            if CFG.Fly then
+                if type(yVel) ~= "number" then
+                    yVel = -16
+                else
+                    yVel = math.clamp(yVel, -40, 8)
+                end
+                if type(height) ~= "number" then
+                    height = 6
+                else
+                    height = math.clamp(height, 0, 12)
+                end
+                return orig(self, yVel, height, ...)
+            end
+            if CFG.NoFall then
                 return
             end
-            return orig(self, ...)
+            return orig(self, yVel, height, ...)
         end, "suppressFreefall")
         local okH, hooked = pcall(hookfunction, ff.FireServer, proxy)
         if okH then
@@ -4191,131 +4278,23 @@ local function install_movement()
             extraHooks[#extraHooks + 1] = { kind = "fn", target = ff.FireServer }
         end
     end
-    do
-        local stance = ReplicatedStorage:FindFirstChild("Client")
-        stance = stance and stance:FindFirstChild("Character")
-        stance = stance and stance:FindFirstChild("stance")
-        stance = stance and stance:FindFirstChild("StanceController")
-        if stance and getscriptclosure and debug and debug.getproto then
-            local ok, root = pcall(getscriptclosure, stance)
-            if ok and type(root) == "function" then
-                local seen = {}
-                local function walk(fn, depth)
-                    if type(fn) ~= "function" or depth > 8 or seen[fn] then
-                        return
-                    end
-                    seen[fn] = true
-                    patch_freefall_upvalue(fn)
-                    for i = 1, 64 do
-                        local pok, proto = pcall(debug.getproto, fn, i, true)
-                        if not pok then
-                            pok, proto = pcall(debug.getproto, fn, i)
-                        end
-                        if not pok or type(proto) ~= "function" then
-                            break
-                        end
-                        walk(proto, depth + 1)
-                    end
-                end
-                pcall(walk, root, 0)
-            end
-        end
-    end
-
-    local function idx_conn_function(conn)
-        return conn.Function
-    end
-    local function idx_conn_foreign(conn)
-        return conn.ForeignFunction
-    end
-    local function connection_fn(conn)
-        if conn == nil then
-            return nil
-        end
-        local okF, fn = pcall(idx_conn_function, conn)
-        if okF and type(fn) == "function" then
-            return fn
-        end
-        local okFF, ff = pcall(idx_conn_foreign, conn)
-        if okFF and type(ff) == "function" then
-            return ff
-        end
-        return nil
-    end
-
-    local function hook_humanoid(hum)
-        if not hum or hookedHum == hum then
-            return
-        end
-        hookedHum = hum
-        local getconnections = getconnections
-        if getconnections then
-            local ok, conns = pcall(getconnections, hum.StateChanged)
-            if ok and type(conns) == "table" then
-                for _, conn in conns do
-                    local fn = connection_fn(conn)
-                    if type(fn) == "function" then
-                        patch_freefall_upvalue(fn)
-                    end
-                end
-            end
-        end
-    end
 
     bind(LP.CharacterAdded:Connect(function()
-        hookedHum = nil
         table.clear(collideSave)
         task.defer(function()
-            local _, hum = hum_hrp()
-            if hum then
-                hook_humanoid(hum)
-                if CFG.NoClip then
-                    noclip_set(true)
-                end
+            if CFG.NoClip then
+                noclip_set(true)
             end
-        end)
-        task.delay(1, function()
-            hookedHum = nil
-            local _, hum = hum_hrp()
-            if hum then
-                hook_humanoid(hum)
-            end
-        end)
-        task.delay(2.5, function()
-            hookedHum = nil
-            local _, hum = hum_hrp()
-            if hum then
-                hook_humanoid(hum)
+            if CFG.Speed then
+                apply_speed_mul(true)
             end
         end)
     end))
-    do
-        local _, hum0 = hum_hrp()
-        if hum0 then
-            hook_humanoid(hum0)
-        end
-        task.delay(1, function()
-            hookedHum = nil
-            local _, hum = hum_hrp()
-            if hum then
-                hook_humanoid(hum)
-            end
-        end)
-        task.delay(2.5, function()
-            hookedHum = nil
-            local _, hum = hum_hrp()
-            if hum then
-                hook_humanoid(hum)
-            end
-        end)
-    end
 
     F.set_fly = function(on)
         CFG.Fly = on and true or false
         local _, hum, hrp = hum_hrp()
-        if CFG.Fly then
-            hook_humanoid(hum)
-        else
+        if not CFG.Fly then
             ground_lock(hum, false)
             if hrp then
                 local v = hrp.AssemblyLinearVelocity
@@ -4323,8 +4302,32 @@ local function install_movement()
             end
         end
     end
+    local function apply_speed_mul(on)
+        local char = LP.Character
+        local cv = char and char:FindFirstChild("CharacterValues")
+        local sm = cv and cv:FindFirstChild("SpeedMultiplier")
+        if not (sm and sm:IsA("NumberValue")) then
+            return
+        end
+        if on then
+            if sm:GetAttribute("CWOrig") == nil then
+                sm:SetAttribute("CWOrig", sm.Value)
+            end
+            local spd = CFG.SpeedStuds
+            if type(spd) ~= "number" or spd < 1 then
+                spd = 42
+            end
+            sm.Value = spd / 22
+        else
+            local orig = sm:GetAttribute("CWOrig")
+            sm.Value = type(orig) == "number" and orig or 1
+            pcall(sm.SetAttribute, sm, "CWOrig", nil)
+        end
+    end
+
     F.set_speed = function(on)
         CFG.Speed = on and true or false
+        apply_speed_mul(CFG.Speed)
     end
     F.set_noclip = function(on)
         CFG.NoClip = on and true or false
@@ -4349,7 +4352,7 @@ local function install_movement()
     end))
 
     bind(RunService.Heartbeat:Connect(function(dt)
-        if not (CFG.Fly or CFG.Speed or CFG.NoClip) then
+        if not (CFG.Fly or CFG.NoClip) then
             return
         end
         if dt <= 0 then
@@ -4396,18 +4399,6 @@ local function install_movement()
             end
             hrp:ApplyImpulse(V3(0, mass * Workspace.Gravity * dt, 0))
             hrp.AssemblyLinearVelocity = want
-        elseif CFG.Speed then
-            local md = hum.MoveDirection
-            if md.Magnitude > 0.05 then
-                local spd = CFG.SpeedStuds
-                if type(spd) ~= "number" or spd < 1 then
-                    spd = 42
-                end
-                local horiz = md.Unit * spd
-                local vy = hrp.AssemblyLinearVelocity.Y
-                hrp.CFrame = hrp.CFrame + horiz * dt
-                hrp.AssemblyLinearVelocity = V3(horiz.X, vy, horiz.Z)
-            end
         end
     end))
 end
@@ -4608,7 +4599,7 @@ local function install_staff_detect()
             scan()
         end
     end)
-    bind(RunService.RenderStepped:Connect(function()
+    F.paint_staff_warn = function()
         if not warnText then
             return
         end
@@ -4628,11 +4619,22 @@ local function install_staff_detect()
         warnText.Position = V2(vpX * 0.5, vpY * 0.28)
         local pulse = 0.4 + 0.6 * (0.5 + 0.5 * sin(clock() * 10))
         warnText.Transparency = pulse
-    end))
+    end
 end
 
 load_game_modules()
-install_hooks()
+if not install_hooks() then
+    task.spawn(function()
+        for _ = 1, 25 do
+            task.wait(0.4)
+            pcall(load_game_modules)
+            if install_hooks() then
+                return
+            end
+        end
+        warn("[CWCombat] ClientFire.fireVolley not found")
+    end)
+end
 install_movement()
 install_staff_detect()
 pcall(function()
@@ -4696,6 +4698,9 @@ bind(RunService.RenderStepped:Connect(function(dt)
         return
     end
     F.prep_frame()
+    if F.paint_staff_warn then
+        F.paint_staff_warn()
+    end
     local now = clock()
     local mcf = F.muzzle_cframe()
     local muzzlePos = (mcf and mcf.Position) or Cam.CFrame.Position
@@ -5482,6 +5487,9 @@ local function buildUI(ctx)
         Max = 120,
         Callback = function(v)
             CFG.SpeedStuds = v
+            if CFG.Speed and F.set_speed then
+                F.set_speed(true)
+            end
         end,
     })
 
@@ -5572,8 +5580,12 @@ local function buildUI(ctx)
         end,
         set = function(v)
             CFG.VehicleStealer = v
-            if not v and F.stealer_off then
-                F.stealer_off()
+            if not v then
+                if F.stealer_off then
+                    F.stealer_off()
+                end
+            elseif F.stealer_scan then
+                F.stealer_scan()
             end
         end,
     })
