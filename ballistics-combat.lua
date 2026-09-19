@@ -76,7 +76,7 @@ local CFG = {
     ForceHitDelay = 0,
     SmartInstantRefDist = 400,
     SmartInstantRefDelay = 0.08,
-    SmartInstantMaxDelay = 0.8,
+    SmartInstantMaxDelay = 0.9,
     ForceHitPart = "auto",
 
     MultiPoint = true,
@@ -113,6 +113,7 @@ local CFG = {
     InstantSit = true,
     SitAnimSpeed = 8,
     VehicleStealer = true,
+    VehicleStealHighlight = false,
     VehicleSpeed = true,
     VehicleSpeedMul = 2.2,
     StaffDetect = true,
@@ -262,6 +263,17 @@ for i = 1, 48 do
     candPool[i] = { player = nil, char = nil, bone = nil, pos = ZERO3, dist = 0 }
 end
 local saTgtBuf = {
+    player = nil,
+    pos = nil,
+    claimPos = nil,
+    bone = nil,
+    origin = nil,
+    spoof = nil,
+    tier = 0,
+    mode = "live",
+    inVeh = false,
+}
+local saFireTgt = {
     player = nil,
     pos = nil,
     claimPos = nil,
@@ -573,27 +585,6 @@ function F.in_vehicle(player)
             ok = true
         end
     end
-    if not ok and hrp then
-        local joints = hrp:GetJoints()
-        for i = 1, #joints do
-            local w = joints[i]
-            local other = (w.Part0 == hrp and w.Part1) or w.Part0
-            local cur = other
-            for _ = 1, 8 do
-                if not cur or cur == Workspace then
-                    break
-                end
-                if CollectionService:HasTag(cur, "AdoptVehicle") then
-                    ok = true
-                    break
-                end
-                cur = cur.Parent
-            end
-            if ok then
-                break
-            end
-        end
-    end
     r.inVeh = ok
     return ok
 end
@@ -744,10 +735,6 @@ function F.spread_around(dir, deg)
     end
     local tan = math.tan(math.rad(deg))
     return (dir + V3(rnd() * 2 - 1, rnd() * 2 - 1, rnd() * 2 - 1) * tan).Unit
-end
-
-function F.bone_vel(player, bone)
-    return F.target_vel(player, bone, F.in_vehicle(player))
 end
 
 local visParams = RaycastParams.new()
@@ -1209,7 +1196,6 @@ function F.pick_silent_target(origin, maxDist, needVis, fovDeg, boneName, allowM
                             c.pos = nowPos
                             c.dist = dist
                             c.fov2 = fov2
-                            F.target_vel(player, bone, F.in_vehicle(player))
                         end
                     end
                 end
@@ -1731,8 +1717,26 @@ function F.lerp_color(a, b, t)
 end
 
 function F.update_esp_one(player, cam, origin)
+    if player == LP then
+        return
+    end
     local char = player.Character
     if not char or not char.Parent then
+        return
+    end
+    if CFG.EspEnemyOnly then
+        if not F.enemy(player) then
+            local existing = espByModel[char]
+            if existing then
+                F.hide_esp(existing)
+            end
+            return
+        end
+    elseif not F.alive(player) then
+        local existing = espByModel[char]
+        if existing then
+            F.hide_esp(existing)
+        end
         return
     end
     local o = espByModel[char]
@@ -1740,16 +1744,7 @@ function F.update_esp_one(player, cam, origin)
         o = F.new_esp()
         espByModel[char] = o
     end
-    if not CFG.ESP or player == LP then
-        F.hide_esp(o)
-        return
-    end
-    if CFG.EspEnemyOnly then
-        if not F.enemy(player) then
-            F.hide_esp(o)
-            return
-        end
-    elseif not F.alive(player) then
+    if not CFG.ESP then
         F.hide_esp(o)
         return
     end
@@ -2315,7 +2310,8 @@ function F.hit_fx(fromPos, hitPos)
     if CFG.ShotTracers and typeof(fromPos) == "Vector3" then
         tracers[#tracers + 1] = { a = fromPos, b = hitPos, t = clock() }
         if #tracers > 32 then
-            table.remove(tracers, 1)
+            tracers[1] = tracers[#tracers]
+            tracers[#tracers] = nil
         end
     end
 end
@@ -3215,17 +3211,16 @@ local function install_hooks()
                 src = F.pick_silent_target(F.shot_origin(origin), CFG.SilentAimMaxDist, F.need_los())
             end
             if src then
-                tgt = {
-                    player = src.player,
-                    pos = src.pos,
-                    claimPos = src.claimPos,
-                    bone = src.bone,
-                    origin = src.origin,
-                    spoof = src.spoof,
-                    tier = src.tier,
-                    mode = src.mode,
-                    inVeh = src.inVeh,
-                }
+                saFireTgt.player = src.player
+                saFireTgt.pos = src.pos
+                saFireTgt.claimPos = src.claimPos
+                saFireTgt.bone = src.bone
+                saFireTgt.origin = src.origin
+                saFireTgt.spoof = src.spoof
+                saFireTgt.tier = src.tier
+                saFireTgt.mode = src.mode
+                saFireTgt.inVeh = src.inVeh
+                tgt = saFireTgt
             end
             if tgt then
                 local bone = tgt.bone
@@ -3310,7 +3305,7 @@ local function install_hooks()
                     local dist = typeof(pos) == "Vector3" and typeof(from) == "Vector3" and (pos - from).Magnitude or 0
                     local speed, drag = F.weapon_profile(tool, muzzleIdx, bulletIdx)
                     local t = F.flight_time(dist, speed, drag)
-                    delay = math.clamp(t * 0.5, 0.05, CFG.SmartInstantMaxDelay or 0.8)
+                    delay = math.clamp(t * 0.65, 0.06, CFG.SmartInstantMaxDelay or 0.9)
                 else
                     delay = math.max(delay, F.ping_sec() * 0.5)
                 end
@@ -3519,18 +3514,6 @@ function install_extra_hooks()
         if animatorMod then
             local oka2, animator = pcall(require, animatorMod)
             if oka2 and animator then
-                local function is_reload_anim(name)
-                    if type(name) ~= "string" then
-                        return false
-                    end
-                    return string.find(name, "Reload", 1, true)
-                        or name == "BoltRelease"
-                        or name == "InsertBullet"
-                        or name == "StartInserting"
-                        or name == "FinishInserting"
-                        or name == "UnloadProjectile"
-                        or name == "Discard"
-                end
                 if animator.playAndYield then
                     hook_fn(animator, "playAndYield", "instantEquipYield", function(orig, self, name, ...)
                         local spd = CFG.EquipAnimSpeed or 8
@@ -3968,6 +3951,9 @@ function install_extra_hooks()
         end
 
         local function set_hl(veh, on)
+            if on and not CFG.VehicleStealHighlight then
+                on = false
+            end
             local hl = highlights[veh]
             if on then
                 if not (hl and hl.Parent) then
@@ -4199,7 +4185,7 @@ function install_extra_hooks()
                 task.wait(1)
                 if CFG.VehicleStealer then
                     for prompt in watching do
-                        if prompt.Parent then
+                        if prompt.Parent and (prompt.MaxActivationDistance < 1 or prompt.Enabled == false) then
                             unlock_prompt(prompt)
                         end
                     end
@@ -4440,9 +4426,6 @@ local function install_movement()
             end
         end
         return false
-    end
-    local function should_block_fall()
-        return CFG.NoFall == true and CFG.Fly ~= true
     end
     if ff and ff:IsA("RemoteEvent") and hookfunction then
         local orig
@@ -5134,7 +5117,7 @@ local function buildUI(ctx)
         Min = 0,
         Max = 100,
         Suffix = "%",
-        Desc = "Chance a shot is silently redirected. The rest fire honestly.",
+        Desc = "How often silent aim takes the shot.",
         Callback = function(v)
             CFG.HitChance = v
         end,
@@ -5146,12 +5129,12 @@ local function buildUI(ctx)
         return CFG.InstantHit
     end, function(v)
         CFG.InstantHit = v
-    end, "Send HitClaim after flight time. Does not eat the real sendClaim while waiting.")
+    end, "Registers the hit before the bullet arrives.")
     boolToggle(sa, "Smart Delay", "CW_SmartInstant", function()
         return CFG.SmartInstant
     end, function(v)
         CFG.SmartInstant = v
-    end, "Delay the claim by flight time so it does not look instant.")
+    end, "Waits based on bullet speed so far shots still count.")
     slider(sa, {
         Name = "Max Delay",
         Flag = "CW_SmartMax",
@@ -5168,7 +5151,7 @@ local function buildUI(ctx)
         return CFG.ForceHit
     end, function(v)
         CFG.ForceHit = v
-    end, "Remap the local impact part to the aim bone.")
+    end, "Puts the hit on the selected bone.")
     sa:Dropdown({
         Name = "Force Hit Part",
         Options = { "auto", "Head", "Torso" },
@@ -5275,7 +5258,7 @@ local function buildUI(ctx)
         return CFG.MultiPoint
     end, function(v)
         CFG.MultiPoint = v
-    end, "Shift the shot origin until the target is visible.")
+    end, "Shoots around cover when the target is blocked.")
     boolToggle(sa, "Spoof Origin", "CW_SpoofOrigin", function()
         return CFG.SpoofOrigin
     end, function(v)
@@ -5305,7 +5288,7 @@ local function buildUI(ctx)
         Min = 50,
         Max = 800,
         Suffix = " stds",
-        Desc = "MultiPoint is skipped beyond this distance.",
+        Desc = "How far MultiPoint still works.",
         Callback = function(v)
             CFG.MPMaxDist = v
         end,
@@ -5325,7 +5308,7 @@ local function buildUI(ctx)
 
     local lg = Combat:Section({ Side = "Left" })
     lg:Header({ Name = "Shot Noise" })
-    disc(lg, "Offsets each redirected shot inside the hitbox and adds a small cone so pellets are not a straight line.")
+    disc(lg, "Makes silent shots look less perfect.")
     boolToggle(lg, "Enabled", "CW_LegitAim", function()
         return CFG.LegitAim
     end, function(v)
@@ -5339,7 +5322,7 @@ local function buildUI(ctx)
         Max = 2,
         Precision = 2,
         Suffix = " deg",
-        Desc = "How messy the shot grouping is.",
+        Desc = "Random cone on redirected shots.",
         Callback = function(v)
             CFG.LegitSpread = v
         end,
@@ -5351,7 +5334,7 @@ local function buildUI(ctx)
         Min = 0.05,
         Max = 0.45,
         Precision = 2,
-        Desc = "Random offset inside the hitbox so every shot is not pixel-perfect.",
+        Desc = "Random offset inside the hitbox.",
         Callback = function(v)
             CFG.LegitBoneJitter = v
         end,
@@ -5391,7 +5374,7 @@ local function buildUI(ctx)
         return CFG.AimbotPredict
     end, function(v)
         CFG.AimbotPredict = v
-    end, "Light lead so the camera tracks moving targets.")
+    end, "Leads the camera on moving targets.")
     slider(ab, {
         Name = "Predict Amount",
         Flag = "CW_AbPredMul",
@@ -5432,7 +5415,7 @@ local function buildUI(ctx)
         Min = 1,
         Max = 25,
         Precision = 1,
-        Desc = "1 = snappy. Higher = slower camera lock.",
+        Desc = "How fast the camera locks on.",
         Callback = function(v)
             CFG.AimbotSmooth = v
         end,
@@ -5613,7 +5596,7 @@ local function buildUI(ctx)
     feature(gmCh, {
         Title = "Crosshair Aim",
         Flag = "CW_CrosshairAim",
-        Desc = "Fire from screen center instead of the muzzle. Sync With Aim then stays centered.",
+        Desc = "Shoots from the center of the screen.",
         get = function()
             return CFG.CrosshairAim
         end,
@@ -5777,7 +5760,7 @@ local function buildUI(ctx)
         Min = 1,
         Max = 5,
         Precision = 2,
-        Desc = "Torque only. Does not scale TopSpeed. Re-enter the vehicle after toggle.",
+        Desc = "Makes vehicles faster.",
         Callback = function(v)
             CFG.VehicleSpeedMul = v
         end,
@@ -5812,7 +5795,7 @@ local function buildUI(ctx)
     feature(steal, {
         Title = "Vehicle Stealer",
         Flag = "CW_VehSteal",
-        Desc = "Shows locked driver prompts. On press: engine Sit, no SeatVehicle.",
+        Desc = "Lets you enter locked vehicles.",
         get = function()
             return CFG.VehicleStealer
         end,
@@ -5827,6 +5810,18 @@ local function buildUI(ctx)
             end
         end,
     })
+    boolToggle(steal, "Highlight locked cars", "CW_VehStealHl", function()
+        return CFG.VehicleStealHighlight
+    end, function(v)
+        CFG.VehicleStealHighlight = v and true or false
+        if not CFG.VehicleStealHighlight then
+            if F.stealer_off then
+                F.stealer_off()
+            end
+        elseif F.stealer_scan then
+            F.stealer_scan()
+        end
+    end, "Marks locked vehicles in red.")
 
     local es = Visuals:Section({ Side = "Left" })
     es:Header({ Name = "ESP" })
@@ -6167,7 +6162,7 @@ local function buildUI(ctx)
         return CFG.CrosshairSyncAim
     end, function(v)
         CFG.CrosshairSyncAim = v
-    end, "While ADS, draw the crosshair where the bullet goes, not screen center.")
+    end, "Moves the crosshair to the aim point while ADS.")
     slider(chs, {
         Name = "Sync Pad",
         Flag = "CW_ChSyncPad",
@@ -6175,7 +6170,7 @@ local function buildUI(ctx)
         Min = 0,
         Max = 40,
         Suffix = " px",
-        Desc = "Pulls the synced mark toward screen center.",
+        Desc = "How far the synced crosshair sits from center.",
         Callback = function(v)
             CFG.CrosshairSyncPad = v
         end,
@@ -6244,7 +6239,7 @@ local function buildUI(ctx)
 
     local vm = Visuals:Section({ Side = "Left" })
     vm:Header({ Name = "Aim Viewmodel" })
-    disc(vm, "Offsets the first-person weapon while aiming.")
+    disc(vm, "Moves the first-person gun while aiming.")
     boolToggle(vm, "Enabled", "CW_VmAim", function()
         return CFG.VmAim
     end, function(v)
@@ -6406,7 +6401,7 @@ local function buildUI(ctx)
 
     local optz = Misc:Section({ Side = "Right" })
     optz:Header({ Name = "Optimizer" })
-    disc(optz, "Caps how often silent aim and ESP vis raycasts run.")
+    disc(optz, "Lowers ESP and silent aim cost.")
     slider(optz, {
         Name = "Pick Rate",
         Flag = "CW_PickRate",
@@ -6415,7 +6410,7 @@ local function buildUI(ctx)
         Max = 0.2,
         Precision = 3,
         Suffix = "s",
-        Desc = "0 = every frame. Higher = cheaper silent target pick.",
+        Desc = "How often silent aim picks a target.",
         Callback = function(v)
             CFG.PickRate = v
         end,
@@ -6438,7 +6433,7 @@ local function buildUI(ctx)
         Default = CFG.EspPerFrame,
         Min = 0,
         Max = 64,
-        Desc = "0 = all players every frame.",
+        Desc = "How many players ESP updates each frame.",
         Callback = function(v)
             CFG.EspPerFrame = v
         end,
@@ -6449,7 +6444,7 @@ local function buildUI(ctx)
     feature(dbg, {
         Title = "Staff Detect",
         Flag = "CW_StaffDetect",
-        Desc = "EXPERIMENTAL",
+        Desc = "Detects staff on the server.",
         get = function()
             return CFG.StaffDetect
         end,
