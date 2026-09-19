@@ -112,9 +112,13 @@ local CFG = {
     TurretSA = true,
     InstantSit = true,
     SitAnimSpeed = 8,
+    VehicleStealer = true,
     VehicleSpeed = true,
     VehicleSpeedMul = 2.2,
     StaffDetect = true,
+    StaffKick = true,
+    StaffNotify = true,
+    StaffWarning = true,
 
     Speed = false,
     SpeedStuds = 42,
@@ -3216,7 +3220,6 @@ local function install_hooks()
             local seed = results[1] and results[1].seed
             if type(seed) == "number" then
                 F.prune_claims()
-                claimedSeeds[seed] = clock()
                 local player, bone, pos = tgt.player, tgt.bone, (tgt.claimPos or tgt.pos)
                 local from = fireOrigin
                 local peeked = peek == true
@@ -3225,9 +3228,14 @@ local function install_hooks()
                     local dist = typeof(pos) == "Vector3" and typeof(from) == "Vector3" and (pos - from).Magnitude or 0
                     local speed, drag = F.weapon_profile(tool, muzzleIdx, bulletIdx)
                     local t = F.flight_time(dist, speed, drag)
-                    delay = math.clamp(t + F.ping_sec() * 0.25, 0, CFG.SmartInstantMaxDelay or 0.22)
+                    delay = math.clamp(t + F.ping_sec() * 0.5, 0.04, CFG.SmartInstantMaxDelay or 0.22)
+                else
+                    delay = math.max(delay, F.ping_sec() * 0.5)
                 end
                 local function send()
+                    if claimedSeeds[seed] then
+                        return
+                    end
                     if player == LP then
                         return
                     end
@@ -3755,36 +3763,108 @@ function install_extra_hooks()
     end
 
     do
-        local function boost_drive(orig, self, ...)
-            local result = orig(self, ...)
-            if not CFG.VehicleSpeed or type(self) ~= "table" then
-                return result
+        local CS = game:GetService("CollectionService")
+        local stealAt, stealSeat = 0, nil
+        local function occupant_of(seat)
+            if not seat then
+                return nil
             end
-            local root = self.root
-            if not (root and root.Parent) then
-                return result
+            local ov = seat:FindFirstChild("Occupant")
+            if ov and ov:IsA("ObjectValue") then
+                return ov.Value
+            end
+            if seat:IsA("VehicleSeat") then
+                return seat.Occupant
+            end
+            return nil
+        end
+        local function is_driver_seat(seat)
+            if not seat then
+                return false
+            end
+            if seat.Name == "DriverSeat" then
+                return true
+            end
+            return seat:IsA("VehicleSeat")
+        end
+        local function nearest_driver(origin, maxDist)
+            local best, bestD = nil, maxDist
+            local tagged = CS:GetTagged("FactoryVehicleSeat")
+            for i = 1, #tagged do
+                local seat = tagged[i]
+                if is_driver_seat(seat) and occupant_of(seat) == nil then
+                    local pos = seat.Position
+                    local d = (pos - origin).Magnitude
+                    if d < bestD then
+                        best, bestD = seat, d
+                    end
+                end
+            end
+            return best
+        end
+        local function force_driver(seat, hum)
+            if not (seat and hum) then
+                return
+            end
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+            local rf = remotes and remotes:FindFirstChild("SeatVehicle")
+            if rf and rf:IsA("RemoteFunction") then
+                pcall(rf.InvokeServer, rf, seat)
+            end
+            if seat:IsA("VehicleSeat") or seat:IsA("Seat") then
+                pcall(seat.Sit, seat, hum)
+            end
+        end
+        bind(RunService.Heartbeat:Connect(function()
+            if not CFG.VehicleStealer then
+                stealSeat = nil
+                return
+            end
+            local now = clock()
+            if now - stealAt < 0.4 then
+                return
+            end
+            local char = LP.Character
+            local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if not (hum and hrp) or hum.Health <= 0 then
+                return
+            end
+            if hum.Sit or hum.SeatPart then
+                return
+            end
+            local seat = nearest_driver(hrp.Position, 22)
+            if not seat or seat == stealSeat then
+                return
+            end
+            stealAt = now
+            stealSeat = seat
+            force_driver(seat, hum)
+        end))
+    end
+
+    do
+        local function scale_torque(cfg)
+            if type(cfg) ~= "table" then
+                return cfg
             end
             local mul = CFG.VehicleSpeedMul
             if type(mul) ~= "number" or mul <= 1 then
-                return result
+                return cfg
             end
-            local look = root.CFrame.LookVector
-            local v = root.AssemblyLinearVelocity
-            local along = v:Dot(look)
-            if math.abs(along) < 4 then
-                return result
+            local okCopy, copy = pcall(table.clone, cfg)
+            if not okCopy or type(copy) ~= "table" then
+                return cfg
             end
-            local cap = self.topSpeed or 55
-            if type(cap) ~= "number" or cap < 1 then
-                cap = 55
+            local keys = { "PeakTorque", "IdleTorque", "RedlineTorque", "TorqueScale", "DriveGain", "HorsepowerLimit" }
+            for i = 1, #keys do
+                local k = keys[i]
+                local v = cfg[k]
+                if type(v) == "number" then
+                    copy[k] = v * mul
+                end
             end
-            local target = cap * mul
-            if along < 0 then
-                target = -target
-            end
-            local newAlong = along + (target - along) * 0.18
-            root.AssemblyLinearVelocity = v + look * (newAlong - along)
-            return result
+            return copy
         end
         local shared = ReplicatedStorage:FindFirstChild("Shared")
         local veh = shared and shared:FindFirstChild("Vehicle")
@@ -3792,15 +3872,25 @@ function install_extra_hooks()
             local wd = veh:FindFirstChild("WheelDrive")
             if wd then
                 local okW, WheelDrive = pcall(require, wd)
-                if okW and type(WheelDrive) == "table" and type(WheelDrive.Update) == "function" then
-                    hook_fn(WheelDrive, "Update", "vehicleSpeedWheel", boost_drive)
+                if okW and type(WheelDrive) == "table" and type(WheelDrive.new) == "function" then
+                    hook_fn(WheelDrive, "new", "vehicleSpeedWheel", function(orig, vehicle, config, inputs)
+                        if CFG.VehicleSpeed then
+                            config = scale_torque(config)
+                        end
+                        return orig(vehicle, config, inputs)
+                    end)
                 end
             end
             local td = veh:FindFirstChild("TrackDrive")
             if td then
                 local okT, TrackDrive = pcall(require, td)
-                if okT and type(TrackDrive) == "table" and type(TrackDrive.Update) == "function" then
-                    hook_fn(TrackDrive, "Update", "vehicleSpeedTrack", boost_drive)
+                if okT and type(TrackDrive) == "table" and type(TrackDrive.new) == "function" then
+                    hook_fn(TrackDrive, "new", "vehicleSpeedTrack", function(orig, vehicle, config, inputs)
+                        if CFG.VehicleSpeed then
+                            config = scale_torque(config)
+                        end
+                        return orig(vehicle, config, inputs)
+                    end)
                 end
             end
         end
@@ -3909,6 +3999,20 @@ local function install_movement()
         end
     end
 
+    local PHYS = Enum.HumanoidStateType.Physics
+    local function mv_phys(hum, on)
+        if not hum then
+            return
+        end
+        if on then
+            if hum:GetState() ~= PHYS then
+                hum:ChangeState(PHYS)
+            end
+        elseif hum:GetState() == PHYS then
+            hum:ChangeState(Enum.HumanoidStateType.Running)
+        end
+    end
+
     local function noclip_set(on)
         local char = LP.Character
         if not on then
@@ -3937,6 +4041,7 @@ local function install_movement()
         CFG.Fly, CFG.Speed, CFG.NoClip = false, false, false
         local _, hum, hrp = hum_hrp()
         ground_lock(hum, false)
+        mv_phys(hum, false)
         if hrp then
             local v = hrp.AssemblyLinearVelocity
             hrp.AssemblyLinearVelocity = V3(0, math.min(v.Y, 0), 0)
@@ -4133,8 +4238,12 @@ local function install_movement()
         local _, hum, hrp = hum_hrp()
         if CFG.Fly then
             hook_humanoid(hum)
+            mv_phys(hum, true)
         else
             ground_lock(hum, false)
+            if not CFG.Speed then
+                mv_phys(hum, false)
+            end
             if hrp then
                 local v = hrp.AssemblyLinearVelocity
                 hrp.AssemblyLinearVelocity = V3(0, math.min(v.Y, 0), 0)
@@ -4143,6 +4252,12 @@ local function install_movement()
     end
     F.set_speed = function(on)
         CFG.Speed = on and true or false
+        local _, hum = hum_hrp()
+        if CFG.Speed then
+            mv_phys(hum, true)
+        elseif not CFG.Fly then
+            mv_phys(hum, false)
+        end
     end
     F.set_noclip = function(on)
         CFG.NoClip = on and true or false
@@ -4179,8 +4294,11 @@ local function install_movement()
         if not (char and hum and hrp) or hum.Health <= 0 then
             return
         end
-        if hum.Sit then
+        if hum.Sit or hum.SeatPart then
             return
+        end
+        if CFG.Fly or CFG.Speed then
+            mv_phys(hum, true)
         end
         if CFG.Fly then
             Cam = Workspace.CurrentCamera
@@ -4223,7 +4341,6 @@ local function install_movement()
                 end
                 local horiz = md.Unit * spd
                 local vy = hrp.AssemblyLinearVelocity.Y
-                hrp.CFrame = hrp.CFrame + horiz * dt
                 hrp.AssemblyLinearVelocity = V3(horiz.X, vy, horiz.Z)
             end
         end
@@ -4244,6 +4361,9 @@ local function unload()
         espByModel[model] = nil
     end
     hide_aim_draw()
+    if F.staff_warn_free then
+        F.staff_warn_free()
+    end
     if F.mv_off then
         F.mv_off()
     end
@@ -4278,7 +4398,7 @@ end
 
 local function install_staff_detect()
     local STAFF_GROUP = 32519006
-    local STAFF_RANK = 242
+    local STAFF_RANK = 103
     local STAFF_ROLES = {
         Admin = true,
         Owner = true,
@@ -4286,17 +4406,55 @@ local function install_staff_detect()
     }
     local kicked = false
     local rankCache = {}
+    local alerted = {}
+    F.staff_running = true
+    F.staffWarnUntil = 0
+    local warnText = nil
+    if Drawing and Drawing.new then
+        warnText = Drawing.new("Text")
+        warnText.Center = true
+        warnText.Outline = true
+        warnText.Size = 32
+        warnText.Color = Color3.fromRGB(255, 45, 45)
+        warnText.Text = "STAFF DETECTED!"
+        warnText.ZIndex = 80
+        warnText.Visible = false
+    end
+    F.staff_warn_free = function()
+        F.staff_running = false
+        F.staffWarnUntil = 0
+        if warnText then
+            warnText.Visible = false
+            pcall(function()
+                warnText:Remove()
+            end)
+            warnText = nil
+        end
+    end
 
-    local function staff_hit()
-        if kicked or not CFG.StaffDetect then
+    local function staff_hit(plr)
+        if not CFG.StaffDetect or not plr or plr == LP then
             return
         end
-        kicked = true
-        pcall(LP.Kick, LP, "Staff detected")
-        task.defer(function()
-            pcall(game.Shutdown, game)
-            pcall(unload)
-        end)
+        local uid = plr.UserId
+        local first = not alerted[uid]
+        alerted[uid] = true
+        if first then
+            if CFG.StaffNotify and F.ui_notify then
+                F.ui_notify("Staff Detect", plr.Name)
+            end
+            if CFG.StaffWarning then
+                F.staffWarnUntil = clock() + 8
+            end
+        end
+        if CFG.StaffKick and not kicked then
+            kicked = true
+            pcall(LP.Kick, LP, "Staff detected")
+            task.defer(function()
+                pcall(game.Shutdown, game)
+                pcall(unload)
+            end)
+        end
     end
 
     local function is_staff(plr)
@@ -4318,13 +4476,13 @@ local function install_staff_detect()
             return
         end
         if is_staff(plr) then
-            staff_hit()
+            staff_hit(plr)
             return
         end
         local uid = plr.UserId
         local cached = rankCache[uid]
         if cached == true then
-            staff_hit()
+            staff_hit(plr)
             return
         end
         if cached == false then
@@ -4340,7 +4498,7 @@ local function install_staff_detect()
             local staff = type(rank) == "number" and rank >= STAFF_RANK
             rankCache[uid] = staff == true
             if staff then
-                staff_hit()
+                staff_hit(plr)
             end
         end)
     end
@@ -4377,11 +4535,32 @@ local function install_staff_detect()
     end
     task.defer(scan)
     task.spawn(function()
-        while not kicked do
+        while F.staff_running do
             task.wait(1.5)
             scan()
         end
     end)
+    bind(RunService.RenderStepped:Connect(function()
+        if not warnText then
+            return
+        end
+        local show = CFG.StaffDetect and CFG.StaffWarning and clock() < (F.staffWarnUntil or 0)
+        if not show then
+            if warnText.Visible then
+                warnText.Visible = false
+            end
+            return
+        end
+        Cam = Workspace.CurrentCamera
+        if Cam then
+            local vp = Cam.ViewportSize
+            vpX, vpY = vp.X, vp.Y
+        end
+        warnText.Visible = true
+        warnText.Position = V2(vpX * 0.5, vpY * 0.28)
+        local pulse = 0.4 + 0.6 * (0.5 + 0.5 * sin(clock() * 10))
+        warnText.Transparency = pulse
+    end))
 end
 
 load_game_modules()
@@ -4505,6 +4684,7 @@ local function buildUI(ctx)
             pcall(ctx.notify, title, body)
         end
     end
+    F.ui_notify = notify
     local function disc(section, text)
         section:SubLabel({ Text = text })
     end
@@ -4655,7 +4835,7 @@ local function buildUI(ctx)
         return CFG.InstantHit
     end, function(v)
         CFG.InstantHit = v
-    end, "Send HitClaim without waiting for the local projectile.")
+    end, "Send HitClaim after flight time. Does not eat the real sendClaim while waiting.")
     boolToggle(sa, "Smart Delay", "CW_SmartInstant", function()
         return CFG.SmartInstant
     end, function(v)
@@ -5283,7 +5463,7 @@ local function buildUI(ctx)
         Min = 1,
         Max = 5,
         Precision = 2,
-        Desc = "Boosts along-velocity after WheelDrive/TrackDrive.Update. Not a config clone.",
+        Desc = "Torque only. Does not scale TopSpeed. Re-enter the vehicle after toggle.",
         Callback = function(v)
             CFG.VehicleSpeedMul = v
         end,
@@ -5310,6 +5490,20 @@ local function buildUI(ctx)
         Precision = 1,
         Callback = function(v)
             CFG.SitAnimSpeed = v
+        end,
+    })
+
+    local steal = Movement:Section({ Side = "Right" })
+    steal:Header({ Name = "Vehicle Stealer" })
+    feature(steal, {
+        Title = "Vehicle Stealer",
+        Flag = "CW_VehSteal",
+        Desc = "Forces DriverSeat via SeatVehicle + Sit. No prompt.",
+        get = function()
+            return CFG.VehicleStealer
+        end,
+        set = function(v)
+            CFG.VehicleStealer = v
         end,
     })
 
@@ -5934,7 +6128,7 @@ local function buildUI(ctx)
     feature(dbg, {
         Title = "Staff Detect",
         Flag = "CW_StaffDetect",
-        Desc = "Other players only. CP Admin/Owner/Granted, FlyAllowed, or Grip Studios rank 242+ (Moderator).",
+        Desc = "Other players. CP Admin/Owner/Granted, FlyAllowed, or Grip Studios rank 103+.",
         get = function()
             return CFG.StaffDetect
         end,
@@ -5942,6 +6136,21 @@ local function buildUI(ctx)
             CFG.StaffDetect = v
         end,
     })
+    boolToggle(dbg, "Kick", "CW_StaffKick", function()
+        return CFG.StaffKick
+    end, function(v)
+        CFG.StaffKick = v
+    end, "Kick and shutdown when staff is found.")
+    boolToggle(dbg, "Notify", "CW_StaffNotify", function()
+        return CFG.StaffNotify
+    end, function(v)
+        CFG.StaffNotify = v
+    end)
+    boolToggle(dbg, "Warning Text", "CW_StaffWarning", function()
+        return CFG.StaffWarning
+    end, function(v)
+        CFG.StaffWarning = v
+    end, "Blinking STAFF DETECTED! above screen center.")
     dbg:Header({ Name = "Cold War Combat" })
     dbg:Button({
         Name = "Unload Combat",
