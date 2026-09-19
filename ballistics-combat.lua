@@ -3764,83 +3764,175 @@ function install_extra_hooks()
 
     do
         local CS = game:GetService("CollectionService")
-        local stealAt, stealSeat = 0, nil
-        local function occupant_of(seat)
-            if not seat then
-                return nil
-            end
-            local ov = seat:FindFirstChild("Occupant")
-            if ov and ov:IsA("ObjectValue") then
-                return ov.Value
-            end
-            if seat:IsA("VehicleSeat") then
-                return seat.Occupant
+        local PPS = game:GetService("ProximityPromptService")
+        local highlights = {}
+        local origDist = {}
+        local watching = {}
+
+        local function vehicle_of(inst)
+            local cur = inst
+            for _ = 1, 12 do
+                if not cur or cur == Workspace then
+                    return nil
+                end
+                if CS:HasTag(cur, "AdoptVehicle") then
+                    return cur
+                end
+                if cur:IsA("Model") and cur:FindFirstChild("Seats") then
+                    return cur
+                end
+                cur = cur.Parent
             end
             return nil
         end
-        local function is_driver_seat(seat)
-            if not seat then
+
+        local function seat_of_prompt(prompt)
+            local p = prompt and prompt.Parent
+            if p and (p:IsA("VehicleSeat") or p:IsA("Seat") or p:IsA("BasePart")) then
+                return p
+            end
+            return nil
+        end
+
+        local function is_locked_veh(veh)
+            if not veh then
                 return false
             end
-            if seat.Name == "DriverSeat" then
-                return true
+            local ownerId = veh:GetAttribute("OwnerUserId")
+            if type(ownerId) ~= "number" or ownerId == LP.UserId then
+                return false
             end
-            return seat:IsA("VehicleSeat")
+            local mode = veh:GetAttribute("LockMode")
+            return mode == "SQUAD" or mode == "FRIENDS"
         end
-        local function nearest_driver(origin, maxDist)
-            local best, bestD = nil, maxDist
-            local tagged = CS:GetTagged("FactoryVehicleSeat")
-            for i = 1, #tagged do
-                local seat = tagged[i]
-                if is_driver_seat(seat) and occupant_of(seat) == nil then
-                    local pos = seat.Position
-                    local d = (pos - origin).Magnitude
-                    if d < bestD then
-                        best, bestD = seat, d
-                    end
+
+        local function set_hl(veh, on)
+            local hl = highlights[veh]
+            if on then
+                if not (hl and hl.Parent) then
+                    hl = Instance.new("Highlight")
+                    hl.Name = "CWLockHl"
+                    hl.FillColor = Color3.fromRGB(255, 40, 40)
+                    hl.OutlineColor = Color3.fromRGB(255, 80, 80)
+                    hl.FillTransparency = 0.62
+                    hl.OutlineTransparency = 0.15
+                    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                    hl.Adornee = veh
+                    hl.Parent = veh
+                    highlights[veh] = hl
                 end
+                hl.Enabled = true
+            elseif hl then
+                pcall(function()
+                    hl:Destroy()
+                end)
+                highlights[veh] = nil
             end
-            return best
         end
-        local function force_driver(seat, hum)
-            if not (seat and hum) then
+
+        local function clear_hls()
+            for veh in highlights do
+                set_hl(veh, false)
+            end
+        end
+
+        local function unlock_prompt(prompt)
+            if not (prompt and prompt:IsA("ProximityPrompt")) then
                 return
             end
-            local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-            local rf = remotes and remotes:FindFirstChild("SeatVehicle")
-            if rf and rf:IsA("RemoteFunction") then
-                pcall(rf.InvokeServer, rf, seat)
+            if not CFG.VehicleStealer then
+                return
+            end
+            if origDist[prompt] == nil then
+                local d = prompt.MaxActivationDistance
+                origDist[prompt] = (type(d) == "number" and d > 0) and d or 32
+            end
+            prompt.Enabled = true
+            prompt.RequiresLineOfSight = false
+            if prompt.HoldDuration > 0.05 then
+                prompt.HoldDuration = 0
+            end
+            if prompt.MaxActivationDistance < 1 then
+                prompt.MaxActivationDistance = origDist[prompt]
+            end
+            local veh = vehicle_of(prompt)
+            if veh then
+                set_hl(veh, is_locked_veh(veh))
+            end
+        end
+
+        local function watch_prompt(prompt)
+            if not (prompt and prompt:IsA("ProximityPrompt")) or watching[prompt] then
+                return
+            end
+            watching[prompt] = true
+            unlock_prompt(prompt)
+            bind(prompt:GetPropertyChangedSignal("MaxActivationDistance"):Connect(function()
+                if CFG.VehicleStealer and prompt.Parent and prompt.MaxActivationDistance < 1 then
+                    prompt.MaxActivationDistance = origDist[prompt] or 32
+                end
+            end))
+            bind(prompt.Destroying:Connect(function()
+                watching[prompt] = nil
+                origDist[prompt] = nil
+            end))
+        end
+
+        if filtergc and hookfunction then
+            local locks = filtergc("function", {
+                Constants = { "FRIENDS", "SQUAD" },
+                IgnoreExecutor = true,
+            }, true)
+            for _, lockFn in { locks } do
+                if type(lockFn) == "table" then
+                    for _, fn in lockFn do
+                        if type(fn) == "function" then
+                            lockFn = fn
+                            break
+                        end
+                    end
+                end
+                if type(lockFn) == "function" then
+                    local old
+                    old = hookfunction(lockFn, newcclosure(function(...)
+                        if CFG.VehicleStealer then
+                            return false
+                        end
+                        return old(...)
+                    end, "isLockBlocked"))
+                    extraHooks[#extraHooks + 1] = { kind = "fn", target = lockFn }
+                end
+            end
+        end
+
+        for _, p in CS:GetTagged("VehiclePrompt") do
+            watch_prompt(p)
+        end
+        bind(CS:GetInstanceAddedSignal("VehiclePrompt"):Connect(watch_prompt))
+        bind(PPS.PromptTriggered:Connect(function(prompt, player)
+            if not CFG.VehicleStealer or player ~= LP then
+                return
+            end
+            local seat = seat_of_prompt(prompt)
+            local char = LP.Character
+            local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+            if not (seat and hum) or hum.Health <= 0 then
+                return
             end
             if seat:IsA("VehicleSeat") or seat:IsA("Seat") then
                 pcall(seat.Sit, seat, hum)
             end
-        end
-        bind(RunService.Heartbeat:Connect(function()
-            if not CFG.VehicleStealer then
-                stealSeat = nil
-                return
+            local veh = vehicle_of(prompt)
+            if veh then
+                set_hl(veh, false)
             end
-            local now = clock()
-            if now - stealAt < 0.4 then
-                return
-            end
-            local char = LP.Character
-            local hum = char and char:FindFirstChildWhichIsA("Humanoid")
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            if not (hum and hrp) or hum.Health <= 0 then
-                return
-            end
-            if hum.Sit or hum.SeatPart then
-                return
-            end
-            local seat = nearest_driver(hrp.Position, 22)
-            if not seat or seat == stealSeat then
-                return
-            end
-            stealAt = now
-            stealSeat = seat
-            force_driver(seat, hum)
         end))
+        bind(LP.CharacterAdded:Connect(function()
+            clear_hls()
+        end))
+        F.stealer_off = function()
+            clear_hls()
+        end
     end
 
     do
@@ -3999,20 +4091,6 @@ local function install_movement()
         end
     end
 
-    local PHYS = Enum.HumanoidStateType.Physics
-    local function mv_phys(hum, on)
-        if not hum then
-            return
-        end
-        if on then
-            if hum:GetState() ~= PHYS then
-                hum:ChangeState(PHYS)
-            end
-        elseif hum:GetState() == PHYS then
-            hum:ChangeState(Enum.HumanoidStateType.Running)
-        end
-    end
-
     local function noclip_set(on)
         local char = LP.Character
         if not on then
@@ -4041,7 +4119,6 @@ local function install_movement()
         CFG.Fly, CFG.Speed, CFG.NoClip = false, false, false
         local _, hum, hrp = hum_hrp()
         ground_lock(hum, false)
-        mv_phys(hum, false)
         if hrp then
             local v = hrp.AssemblyLinearVelocity
             hrp.AssemblyLinearVelocity = V3(0, math.min(v.Y, 0), 0)
@@ -4238,12 +4315,8 @@ local function install_movement()
         local _, hum, hrp = hum_hrp()
         if CFG.Fly then
             hook_humanoid(hum)
-            mv_phys(hum, true)
         else
             ground_lock(hum, false)
-            if not CFG.Speed then
-                mv_phys(hum, false)
-            end
             if hrp then
                 local v = hrp.AssemblyLinearVelocity
                 hrp.AssemblyLinearVelocity = V3(0, math.min(v.Y, 0), 0)
@@ -4252,12 +4325,6 @@ local function install_movement()
     end
     F.set_speed = function(on)
         CFG.Speed = on and true or false
-        local _, hum = hum_hrp()
-        if CFG.Speed then
-            mv_phys(hum, true)
-        elseif not CFG.Fly then
-            mv_phys(hum, false)
-        end
     end
     F.set_noclip = function(on)
         CFG.NoClip = on and true or false
@@ -4296,9 +4363,6 @@ local function install_movement()
         end
         if hum.Sit or hum.SeatPart then
             return
-        end
-        if CFG.Fly or CFG.Speed then
-            mv_phys(hum, true)
         end
         if CFG.Fly then
             Cam = Workspace.CurrentCamera
@@ -4341,6 +4405,7 @@ local function install_movement()
                 end
                 local horiz = md.Unit * spd
                 local vy = hrp.AssemblyLinearVelocity.Y
+                hrp.CFrame = hrp.CFrame + horiz * dt
                 hrp.AssemblyLinearVelocity = V3(horiz.X, vy, horiz.Z)
             end
         end
@@ -4363,6 +4428,9 @@ local function unload()
     hide_aim_draw()
     if F.staff_warn_free then
         F.staff_warn_free()
+    end
+    if F.stealer_off then
+        F.stealer_off()
     end
     if F.mv_off then
         F.mv_off()
@@ -5498,12 +5566,15 @@ local function buildUI(ctx)
     feature(steal, {
         Title = "Vehicle Stealer",
         Flag = "CW_VehSteal",
-        Desc = "Forces DriverSeat via SeatVehicle + Sit. No prompt.",
+        Desc = "Shows locked driver prompts. On press: engine Sit, no SeatVehicle.",
         get = function()
             return CFG.VehicleStealer
         end,
         set = function(v)
             CFG.VehicleStealer = v
+            if not v and F.stealer_off then
+                F.stealer_off()
+            end
         end,
     })
 
