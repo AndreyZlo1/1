@@ -110,11 +110,11 @@ local CFG = {
     AlwaysAct = true,
     NoLimp = true,
     TurretSA = true,
-    VehicleStealer = true,
     InstantSit = true,
     SitAnimSpeed = 8,
     VehicleSpeed = true,
     VehicleSpeedMul = 2.2,
+    StaffDetect = true,
 
     Speed = false,
     SpeedStuds = 42,
@@ -3313,18 +3313,22 @@ local function hook_fn(obj, key, wrapperName, wrap)
     end
     local clone = obj[key]
     if hookfunction then
-        local proxy
-        proxy = newcclosure(function(...)
-            return wrap(clone, ...)
-        end, wrapperName)
-        setstackhidden(proxy, true)
-        clone = hookfunction(obj[key], proxy)
-        extraHooks[#extraHooks + 1] = { kind = "fn", target = obj[key] }
-    else
-        extraHooks[#extraHooks + 1] = { kind = "assign", obj = obj, key = key, orig = clone }
-        obj[key] = function(...)
-            return wrap(clone, ...)
+        local okH, hooked = pcall(function()
+            local proxy = newcclosure(function(...)
+                return wrap(clone, ...)
+            end, wrapperName)
+            setstackhidden(proxy, true)
+            return hookfunction(obj[key], proxy)
+        end)
+        if okH then
+            clone = hooked
+            extraHooks[#extraHooks + 1] = { kind = "fn", target = obj[key] }
+            return
         end
+    end
+    extraHooks[#extraHooks + 1] = { kind = "assign", obj = obj, key = key, orig = clone }
+    obj[key] = function(...)
+        return wrap(clone, ...)
     end
 end
 
@@ -3637,10 +3641,18 @@ function install_extra_hooks()
         if stInst then
             okS, StanceState = pcall(require, stInst)
         end
-        if okM and type(MT) == "table" and type(MT.update) == "function" then
-            hook_fn(MT, "update", "noLimp", function(orig, ctx)
+        local tuneFn = nil
+        if okM and type(MT) == "table" then
+            if type(MT.apply) == "function" then
+                tuneFn = "apply"
+            elseif type(MT.update) == "function" then
+                tuneFn = "update"
+            end
+        end
+        if tuneFn then
+            hook_fn(MT, tuneFn, "moveTune", function(orig, ctx)
                 orig(ctx)
-                if not CFG.NoLimp or type(ctx) ~= "table" then
+                if type(ctx) ~= "table" then
                     return
                 end
                 local hum = ctx.humanoid
@@ -3649,6 +3661,9 @@ function install_extra_hooks()
                     return
                 end
                 if hum.Sit or hum.SeatPart then
+                    return
+                end
+                if not CFG.NoLimp then
                     return
                 end
                 local speeds = okS and StanceState and StanceState.WALK_SPEED
@@ -3661,40 +3676,12 @@ function install_extra_hooks()
                 end
                 hum.WalkSpeed = math.max(base, prone) * wade
             end)
-            
         else
             warn("[CWCombat] MovementTuning missing")
         end
     end
 
     do
-        local CS = game:GetService("CollectionService")
-        local DEFAULT_DIST = 32
-
-        local function is_engine_seat(seat)
-            return seat and (seat:IsA("VehicleSeat") or seat:IsA("Seat"))
-        end
-
-        local function is_driver_seat(seat)
-            if not seat then
-                return false
-            end
-            if seat:IsA("VehicleSeat") then
-                return true
-            end
-            if (seat:IsA("Seat") or seat:IsA("BasePart")) and seat.Name == "DriverSeat" then
-                return true
-            end
-            return false
-        end
-
-        local function is_driver_prompt(prompt)
-            if not (prompt and prompt:IsA("ProximityPrompt")) then
-                return false
-            end
-            return is_driver_seat(prompt.Parent)
-        end
-
         local function sit_speed()
             local s = CFG.SitAnimSpeed
             if type(s) ~= "number" or s < 0.05 then
@@ -3712,217 +3699,92 @@ function install_extra_hooks()
             end)
         end
 
-        local function driver_taken(seat)
-            if not seat then
-                return false
-            end
-            local myChar = LP.Character
-            local myHum = myChar and myChar:FindFirstChildWhichIsA("Humanoid")
-            if is_engine_seat(seat) then
-                local occ = seat.Occupant
-                return occ ~= nil and occ ~= myHum
-            end
-            local ov = seat:FindFirstChild("Occupant")
-            if ov and ov:IsA("ObjectValue") and ov.Value ~= nil then
-                return ov.Value ~= myChar
-            end
-            return false
-        end
-
-        local unlocking = false
-        local function unlock_prompt(prompt)
-            if unlocking or not (CFG.VehicleStealer and is_driver_prompt(prompt)) then
-                return
-            end
-            if driver_taken(prompt.Parent) then
-                return
-            end
-            unlocking = true
-            if prompt.MaxActivationDistance < 1 then
-                local saved = prompt:GetAttribute("CWOrigDist")
-                prompt.MaxActivationDistance = (type(saved) == "number" and saved > 0) and saved or DEFAULT_DIST
-            elseif not prompt:GetAttribute("CWOrigDist") then
-                prompt:SetAttribute("CWOrigDist", prompt.MaxActivationDistance)
-            end
-            prompt.Enabled = true
-            prompt.RequiresLineOfSight = false
-            if prompt.HoldDuration > 0.05 then
-                prompt.HoldDuration = 0
-            end
-            unlocking = false
-        end
-
-        if filtergc and hookfunction then
-            local locks = filtergc("function", {
-                Constants = { "FRIENDS", "SQUAD" },
-                IgnoreExecutor = true,
-            }, true)
-            local n = 0
-            for _, lockFn in { locks } do
-                if type(lockFn) == "table" then
-                    for _, fn in lockFn do
-                        if type(fn) == "function" then
-                            lockFn = fn
-                            break
-                        end
-                    end
-                end
-                if type(lockFn) == "function" then
-                    local old
-                    old = hookfunction(lockFn, newcclosure(function(...)
-                        if CFG.VehicleStealer then
-                            return false
-                        end
-                        return old(...)
-                    end, "isLockBlocked"))
-                    extraHooks[#extraHooks + 1] = { kind = "fn", target = lockFn }
-                    n += 1
-                end
-            end
-            if n > 0 then
-                    
-            else
-                warn("[CWCombat] VehicleStealer: isLockBlocked not found")
-            end
-        end
-
-        local function find_seats_module()
-            local vcc = client:FindFirstChild("VehicleClientController")
-            local inst = vcc and vcc:FindFirstChild("VehicleClientSeats")
-            if inst then
-                return inst
-            end
-            for _, d in client:GetDescendants() do
-                if d.Name == "VehicleClientSeats" and d:IsA("ModuleScript") then
-                    return d
-                end
-            end
-            return nil
-        end
-
-        local seatsModInst = find_seats_module()
-        if seatsModInst then
-            local okS, Seats = pcall(require, seatsModInst)
-            if okS and type(Seats) == "table" then
-                if type(Seats.CanEnterSeat) == "function" then
-                    hook_fn(Seats, "CanEnterSeat", "vehicleCanEnter", function(orig, self, seat)
-                        if CFG.VehicleStealer and is_driver_seat(seat) and not driver_taken(seat) then
-                            local hum = LP.Character and LP.Character:FindFirstChildWhichIsA("Humanoid")
-                            if hum and hum.Health > 0 then
-                                return true
+        local shared = ReplicatedStorage:FindFirstChild("Shared")
+        local veh = shared and shared:FindFirstChild("Vehicle")
+        local vcInst = veh and veh:FindFirstChild("VehicleController")
+        if vcInst then
+            local okC, VC = pcall(require, vcInst)
+            if okC and type(VC) == "table" then
+                if type(VC.GetSeatTracks) == "function" then
+                    hook_fn(VC, "GetSeatTracks", "instantSitTracks", function(orig, self, name, seat)
+                        local tracks = orig(self, name, seat)
+                        if CFG.InstantSit and type(tracks) == "table" then
+                            speed_track(tracks.enter)
+                            speed_track(tracks.idle)
+                            speed_track(tracks.exit)
+                            if tracks.enter then
+                                local enter = tracks.enter
+                                pcall(function()
+                                    enter:Play(0)
+                                    enter:AdjustSpeed(sit_speed())
+                                end)
+                                tracks.enter = nil
                             end
                         end
-                        return orig(self, seat)
+                        return tracks
                     end)
-                    
                 end
-            end
-        else
-            warn("[CWCombat] VehicleStealer: VehicleClientSeats missing")
-        end
-
-        do
-            local shared = ReplicatedStorage:FindFirstChild("Shared")
-            local veh = shared and shared:FindFirstChild("Vehicle")
-            local vcInst = veh and veh:FindFirstChild("VehicleController")
-            if vcInst then
-                local okC, VC = pcall(require, vcInst)
-                if okC and type(VC) == "table" then
-                    if type(VC.GetSeatTracks) == "function" then
-                        hook_fn(VC, "GetSeatTracks", "instantSitTracks", function(orig, self, name, seat)
-                            local tracks = orig(self, name, seat)
-                            if CFG.InstantSit and type(tracks) == "table" then
-                                speed_track(tracks.enter)
-                                speed_track(tracks.idle)
-                                speed_track(tracks.exit)
-                                if tracks.enter then
-                                    local enter = tracks.enter
-                                    pcall(function()
-                                        enter:Play(0)
-                                        enter:AdjustSpeed(sit_speed())
-                                    end)
-                                    tracks.enter = nil
-                                end
+                if type(VC._requestExit) == "function" then
+                    hook_fn(VC, "_requestExit", "instantSitRequestExit", function(orig, self, ...)
+                        if CFG.InstantSit and type(self) == "table" and type(self._seatTracks) == "table" then
+                            local exit = self._seatTracks.exit
+                            speed_track(exit)
+                            if exit then
+                                pcall(function()
+                                    exit:Play(0)
+                                    exit:AdjustSpeed(sit_speed())
+                                end)
                             end
-                            return tracks
-                        end)
-                    end
-                    if type(VC._requestExit) == "function" then
-                        hook_fn(VC, "_requestExit", "instantSitRequestExit", function(orig, self, ...)
-                            if CFG.InstantSit and type(self) == "table" and type(self._seatTracks) == "table" then
-                                local exit = self._seatTracks.exit
-                                speed_track(exit)
-                                if exit then
-                                    pcall(function()
-                                        exit:Play(0)
-                                        exit:AdjustSpeed(sit_speed())
-                                    end)
-                                end
-                                self._seatTracks.exit = nil
-                                if self._seatTracks.enter then
-                                    pcall(function()
-                                        self._seatTracks.enter:Stop(0)
-                                    end)
-                                end
-                                if self._seatTracks.idle then
-                                    pcall(function()
-                                        self._seatTracks.idle:Stop(0)
-                                    end)
-                                end
+                            self._seatTracks.exit = nil
+                            if self._seatTracks.enter then
+                                pcall(function()
+                                    self._seatTracks.enter:Stop(0)
+                                end)
                             end
-                            return orig(self, ...)
-                        end)
-                    end
-                    
+                            if self._seatTracks.idle then
+                                pcall(function()
+                                    self._seatTracks.idle:Stop(0)
+                                end)
+                            end
+                        end
+                        return orig(self, ...)
+                    end)
                 end
             end
         end
-
-        local function watch_prompt(prompt)
-            if not (prompt and prompt:IsA("ProximityPrompt")) then
-                return
-            end
-            unlock_prompt(prompt)
-        end
-
-        for _, p in CS:GetTagged("VehiclePrompt") do
-            watch_prompt(p)
-        end
-        connections[#connections + 1] = CS:GetInstanceAddedSignal("VehiclePrompt"):Connect(watch_prompt)
-        
     end
 
     do
-        local function scale_trans(cfg)
-            if type(cfg) ~= "table" then
-                return cfg
+        local function boost_drive(orig, self, ...)
+            local result = orig(self, ...)
+            if not CFG.VehicleSpeed or type(self) ~= "table" then
+                return result
+            end
+            local root = self.root
+            if not (root and root.Parent) then
+                return result
             end
             local mul = CFG.VehicleSpeedMul
-            if type(mul) ~= "number" or mul < 1 then
-                mul = 1
+            if type(mul) ~= "number" or mul <= 1 then
+                return result
             end
-            local okCopy, copy = pcall(table.clone, cfg)
-            if not okCopy or type(copy) ~= "table" then
-                return cfg
+            local look = root.CFrame.LookVector
+            local v = root.AssemblyLinearVelocity
+            local along = v:Dot(look)
+            if math.abs(along) < 4 then
+                return result
             end
-            local keys = {
-                "TopSpeed",
-                "MaxSpeed",
-                "PeakTorque",
-                "IdleTorque",
-                "RedlineTorque",
-                "TorqueScale",
-                "HorsepowerLimit",
-                "DriveGain",
-            }
-            for i = 1, #keys do
-                local k = keys[i]
-                local v = cfg[k]
-                if type(v) == "number" then
-                    copy[k] = v * mul
-                end
+            local cap = self.topSpeed or 55
+            if type(cap) ~= "number" or cap < 1 then
+                cap = 55
             end
-            return copy
+            local target = cap * mul
+            if along < 0 then
+                target = -target
+            end
+            local newAlong = along + (target - along) * 0.18
+            root.AssemblyLinearVelocity = v + look * (newAlong - along)
+            return result
         end
         local shared = ReplicatedStorage:FindFirstChild("Shared")
         local veh = shared and shared:FindFirstChild("Vehicle")
@@ -3930,27 +3792,15 @@ function install_extra_hooks()
             local wd = veh:FindFirstChild("WheelDrive")
             if wd then
                 local okW, WheelDrive = pcall(require, wd)
-                if okW and type(WheelDrive) == "table" and type(WheelDrive.new) == "function" then
-                    hook_fn(WheelDrive, "new", "vehicleSpeedWheel", function(orig, vehicle, config, inputs)
-                        if CFG.VehicleSpeed then
-                            config = scale_trans(config)
-                        end
-                        return orig(vehicle, config, inputs)
-                    end)
-                    
+                if okW and type(WheelDrive) == "table" and type(WheelDrive.Update) == "function" then
+                    hook_fn(WheelDrive, "Update", "vehicleSpeedWheel", boost_drive)
                 end
             end
             local td = veh:FindFirstChild("TrackDrive")
             if td then
                 local okT, TrackDrive = pcall(require, td)
-                if okT and type(TrackDrive) == "table" and type(TrackDrive.new) == "function" then
-                    hook_fn(TrackDrive, "new", "vehicleSpeedTrack", function(orig, vehicle, config, inputs)
-                        if CFG.VehicleSpeed then
-                            config = scale_trans(config)
-                        end
-                        return orig(vehicle, config, inputs)
-                    end)
-                    
+                if okT and type(TrackDrive) == "table" and type(TrackDrive.Update) == "function" then
+                    hook_fn(TrackDrive, "Update", "vehicleSpeedTrack", boost_drive)
                 end
             end
         end
@@ -4147,13 +3997,17 @@ local function install_movement()
     end
     if ff and ff:IsA("RemoteEvent") and hookfunction then
         local orig
-        orig = hookfunction(ff.FireServer, newcclosure(function(self, ...)
+        local proxy = newcclosure(function(self, ...)
             if should_block_fall() and is_freefall_remote(self) then
                 return
             end
             return orig(self, ...)
-        end, "suppressFreefall"))
-        extraHooks[#extraHooks + 1] = { kind = "fn", target = ff.FireServer }
+        end, "suppressFreefall")
+        local okH, hooked = pcall(hookfunction, ff.FireServer, proxy)
+        if okH then
+            orig = hooked
+            extraHooks[#extraHooks + 1] = { kind = "fn", target = ff.FireServer }
+        end
     end
     do
         local stance = ReplicatedStorage:FindFirstChild("Client")
@@ -4186,6 +4040,27 @@ local function install_movement()
         end
     end
 
+    local function idx_conn_function(conn)
+        return conn.Function
+    end
+    local function idx_conn_foreign(conn)
+        return conn.ForeignFunction
+    end
+    local function connection_fn(conn)
+        if conn == nil then
+            return nil
+        end
+        local okF, fn = pcall(idx_conn_function, conn)
+        if okF and type(fn) == "function" then
+            return fn
+        end
+        local okFF, ff = pcall(idx_conn_foreign, conn)
+        if okFF and type(ff) == "function" then
+            return ff
+        end
+        return nil
+    end
+
     local function hook_humanoid(hum)
         if not hum or hookedHum == hum then
             return
@@ -4196,10 +4071,7 @@ local function install_movement()
             local ok, conns = pcall(getconnections, hum.StateChanged)
             if ok and type(conns) == "table" then
                 for _, conn in conns do
-                    local fn = conn.Function
-                    if type(fn) ~= "function" and conn.ForeignFunction then
-                        fn = conn.ForeignFunction
-                    end
+                    local fn = connection_fn(conn)
                     if type(fn) == "function" then
                         patch_freefall_upvalue(fn)
                     end
@@ -4261,7 +4133,6 @@ local function install_movement()
         local _, hum, hrp = hum_hrp()
         if CFG.Fly then
             hook_humanoid(hum)
-            ground_lock(hum, true)
         else
             ground_lock(hum, false)
             if hrp then
@@ -4346,10 +4217,14 @@ local function install_movement()
         elseif CFG.Speed then
             local md = hum.MoveDirection
             if md.Magnitude > 0.05 then
-                local spd = CFG.SpeedStuds or 42
+                local spd = CFG.SpeedStuds
+                if type(spd) ~= "number" or spd < 1 then
+                    spd = 42
+                end
+                local horiz = md.Unit * spd
                 local vy = hrp.AssemblyLinearVelocity.Y
-                hrp.CFrame = hrp.CFrame + md * spd * dt
-                hrp.AssemblyLinearVelocity = V3(0, vy, 0)
+                hrp.CFrame = hrp.CFrame + horiz * dt
+                hrp.AssemblyLinearVelocity = V3(horiz.X, vy, horiz.Z)
             end
         end
     end))
@@ -4401,9 +4276,118 @@ local function unload()
     
 end
 
+local function install_staff_detect()
+    local STAFF_GROUP = 32519006
+    local STAFF_RANK = 242
+    local STAFF_ROLES = {
+        Admin = true,
+        Owner = true,
+        Granted = true,
+    }
+    local kicked = false
+    local rankCache = {}
+
+    local function staff_hit()
+        if kicked or not CFG.StaffDetect then
+            return
+        end
+        kicked = true
+        pcall(LP.Kick, LP, "Staff detected")
+        task.defer(function()
+            pcall(game.Shutdown, game)
+            pcall(unload)
+        end)
+    end
+
+    local function is_staff(plr)
+        if not plr or plr == LP then
+            return false
+        end
+        local role = plr:GetAttribute("ControlPanelRole")
+        if STAFF_ROLES[role] then
+            return true
+        end
+        if plr:GetAttribute("FlyAllowed") == true then
+            return true
+        end
+        return false
+    end
+
+    local function check_player(plr)
+        if kicked or not CFG.StaffDetect or not plr or plr == LP then
+            return
+        end
+        if is_staff(plr) then
+            staff_hit()
+            return
+        end
+        local uid = plr.UserId
+        local cached = rankCache[uid]
+        if cached == true then
+            staff_hit()
+            return
+        end
+        if cached == false then
+            return
+        end
+        rankCache[uid] = false
+        task.spawn(function()
+            local ok, rank = pcall(plr.GetRankInGroup, plr, STAFF_GROUP)
+            if not ok then
+                rankCache[uid] = nil
+                return
+            end
+            local staff = type(rank) == "number" and rank >= STAFF_RANK
+            rankCache[uid] = staff == true
+            if staff then
+                staff_hit()
+            end
+        end)
+    end
+
+    local function scan()
+        if kicked or not CFG.StaffDetect then
+            return
+        end
+        local list = Players:GetPlayers()
+        for i = 1, #list do
+            check_player(list[i])
+        end
+    end
+
+    local function watch(plr)
+        if not plr or plr == LP then
+            return
+        end
+        bind(plr:GetAttributeChangedSignal("ControlPanelRole"):Connect(function()
+            check_player(plr)
+        end))
+        bind(plr:GetAttributeChangedSignal("FlyAllowed"):Connect(function()
+            check_player(plr)
+        end))
+    end
+
+    bind(Players.PlayerAdded:Connect(function(plr)
+        watch(plr)
+        task.defer(check_player, plr)
+    end))
+    local list = Players:GetPlayers()
+    for i = 1, #list do
+        watch(list[i])
+    end
+    task.defer(scan)
+    task.spawn(function()
+        while not kicked do
+            task.wait(1.5)
+            scan()
+        end
+    end)
+end
+
 load_game_modules()
 install_hooks()
 install_movement()
+install_staff_detect()
 pcall(function()
     RunService:BindToRenderStep("CW_VmAim", Enum.RenderPriority.Camera.Value + 2, function()
         F.vm_aim_offset()
@@ -5299,6 +5283,7 @@ local function buildUI(ctx)
         Min = 1,
         Max = 5,
         Precision = 2,
+        Desc = "Boosts along-velocity after WheelDrive/TrackDrive.Update. Not a config clone.",
         Callback = function(v)
             CFG.VehicleSpeedMul = v
         end,
@@ -5325,20 +5310,6 @@ local function buildUI(ctx)
         Precision = 1,
         Callback = function(v)
             CFG.SitAnimSpeed = v
-        end,
-    })
-
-    local steal = Movement:Section({ Side = "Right" })
-    steal:Header({ Name = "Vehicle Stealer" })
-    feature(steal, {
-        Title = "Vehicle Stealer",
-        Flag = "CW_VehSteal",
-        Desc = "Unlocks empty driver prompts. Does not force sit.",
-        get = function()
-            return CFG.VehicleStealer
-        end,
-        set = function(v)
-            CFG.VehicleStealer = v
         end,
     })
 
@@ -5959,6 +5930,18 @@ local function buildUI(ctx)
     })
 
     local dbg = Misc:Section({ Side = "Left" })
+    dbg:Header({ Name = "Staff Detect" })
+    feature(dbg, {
+        Title = "Staff Detect",
+        Flag = "CW_StaffDetect",
+        Desc = "Other players only. CP Admin/Owner/Granted, FlyAllowed, or Grip Studios rank 242+ (Moderator).",
+        get = function()
+            return CFG.StaffDetect
+        end,
+        set = function(v)
+            CFG.StaffDetect = v
+        end,
+    })
     dbg:Header({ Name = "Cold War Combat" })
     dbg:Button({
         Name = "Unload Combat",
