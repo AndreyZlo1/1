@@ -89,7 +89,7 @@ local CFG = {
     MPMaxTargets = 1,
     VisCacheSec = 0.1,
     PickRate = 0.04,
-    EspPerFrame = 16,
+    EspPerFrame = 40,
     NoRecoil = true,
     InstantEquip = true,
     EquipAnimSpeed = 8,
@@ -1311,7 +1311,7 @@ end
 function F.player_hotbar_slots(player)
     local now = clock()
     local cached = hotbarCache[player]
-    if cached and now - cached.t < 0.4 then
+    if cached and now - cached.t < 2 then
         return cached.list
     end
     local slots = cached and cached.list or {}
@@ -3900,10 +3900,43 @@ function install_extra_hooks()
 
         local function seat_of_prompt(prompt)
             local p = prompt and prompt.Parent
-            if p and (p:IsA("VehicleSeat") or p:IsA("Seat") or p:IsA("BasePart")) then
+            if p and CS:HasTag(p, "FactoryVehicleSeat") then
                 return p
             end
-            return nil
+            if p and (p:IsA("VehicleSeat") or p:IsA("Seat")) then
+                return p
+            end
+            local cur = p
+            for _ = 1, 6 do
+                if not cur then
+                    break
+                end
+                if CS:HasTag(cur, "FactoryVehicleSeat") then
+                    return cur
+                end
+                cur = cur.Parent
+            end
+            return p
+        end
+
+        local function engine_sit(hum, seat)
+            if not (hum and seat) then
+                return false
+            end
+            local char = hum.Parent
+            if seat:IsA("VehicleSeat") or seat:IsA("Seat") then
+                pcall(function()
+                    if hum.SeatPart then
+                        hum.Sit = false
+                    end
+                    seat:Sit(hum)
+                end)
+            end
+            local occ = seat:FindFirstChild("Occupant")
+            if occ and occ:IsA("ObjectValue") and char then
+                occ.Value = char
+            end
+            return hum.SeatPart == seat or (occ and occ.Value == char)
         end
 
         local function is_locked_veh(veh)
@@ -4003,6 +4036,22 @@ function install_extra_hooks()
             end
             watching[prompt] = true
             unlock_prompt(prompt)
+            bind(prompt.Triggered:Connect(function(player)
+                if player ~= LP or not CFG.VehicleStealer then
+                    return
+                end
+                local seat = seat_of_prompt(prompt)
+                local char = LP.Character
+                local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+                if not (seat and hum) or hum.Health <= 0 then
+                    return
+                end
+                engine_sit(hum, seat)
+                local veh = vehicle_of(prompt)
+                if veh then
+                    set_hl(veh, false)
+                end
+            end))
             bind(prompt.Destroying:Connect(function()
                 watching[prompt] = nil
                 origDist[prompt] = nil
@@ -4012,32 +4061,64 @@ function install_extra_hooks()
 
         local lockHooked = false
         local function hook_lock_blocked()
-            if lockHooked or not (filtergc and hookfunction) then
+            if lockHooked then
+                return
+            end
+            local shared = ReplicatedStorage:FindFirstChild("Shared")
+            local vehFolder = shared and shared:FindFirstChild("Vehicle")
+            local gate = vehFolder and vehFolder:FindFirstChild("VehiclePromptGate")
+            if not (gate and gate:IsA("ModuleScript") and hookfunction) then
                 return
             end
             lockHooked = true
-            local locks = filtergc("function", {
-                Constants = { "FRIENDS", "SQUAD" },
-                IgnoreExecutor = true,
-            }, true)
-            for _, lockFn in { locks } do
-                if type(lockFn) == "table" then
-                    for _, fn in lockFn do
-                        if type(fn) == "function" then
-                            lockFn = fn
-                            break
-                        end
-                    end
+            local function hook_one(fn)
+                if type(fn) ~= "function" then
+                    return false
                 end
-                if type(lockFn) == "function" then
-                    local old
-                    old = hookfunction(lockFn, newcclosure(function(...)
+                local old
+                local ok, hooked = pcall(function()
+                    return hookfunction(fn, newcclosure(function(...)
                         if CFG.VehicleStealer then
                             return false
                         end
                         return old(...)
                     end, "isLockBlocked"))
-                    extraHooks[#extraHooks + 1] = { kind = "fn", target = lockFn }
+                end)
+                if ok and hooked then
+                    old = hooked
+                    extraHooks[#extraHooks + 1] = { kind = "fn", target = fn }
+                    return true
+                end
+                return false
+            end
+            if getscriptclosure and debug and debug.getproto then
+                local ok, root = pcall(getscriptclosure, gate)
+                if ok and type(root) == "function" then
+                    local seen = {}
+                    local function walk(fn, depth)
+                        if type(fn) ~= "function" or depth > 8 or seen[fn] then
+                            return false
+                        end
+                        seen[fn] = true
+                        local okUv, uv3 = pcall(debug.getupvalue, fn, 3)
+                        if okUv and type(uv3) == "table" and uv3.ATTRIBUTE == "LockMode" then
+                            return hook_one(fn)
+                        end
+                        for i = 1, 48 do
+                            local pok, proto = pcall(debug.getproto, fn, i, true)
+                            if not pok then
+                                pok, proto = pcall(debug.getproto, fn, i)
+                            end
+                            if not pok or type(proto) ~= "function" then
+                                break
+                            end
+                            if walk(proto, depth + 1) then
+                                return true
+                            end
+                        end
+                        return false
+                    end
+                    walk(root, 0)
                 end
             end
         end
@@ -4100,9 +4181,7 @@ function install_extra_hooks()
             if not (seat and hum) or hum.Health <= 0 then
                 return
             end
-            if seat:IsA("VehicleSeat") or seat:IsA("Seat") then
-                pcall(seat.Sit, seat, hum)
-            end
+            engine_sit(hum, seat)
             local veh = vehicle_of(prompt)
             if veh then
                 set_hl(veh, false)
@@ -4115,6 +4194,18 @@ function install_extra_hooks()
             clear_hls()
         end
         F.stealer_scan = scan_vehicle_prompts
+        task.spawn(function()
+            while F.stealer_scan do
+                task.wait(1)
+                if CFG.VehicleStealer then
+                    for prompt in watching do
+                        if prompt.Parent then
+                            unlock_prompt(prompt)
+                        end
+                    end
+                end
+            end
+        end)
     end
 
     do
@@ -4643,15 +4734,24 @@ local function install_staff_detect()
         end
     end
 
+    local function private_attrs()
+        local pg = LP:FindFirstChild("PlayerGui")
+        return pg and pg:FindFirstChild("PrivateAttributes")
+    end
+
     local function is_staff(plr)
         if not plr or plr == LP then
             return false
         end
-        local role = plr:GetAttribute("ControlPanelRole")
-        if STAFF_ROLES[role] then
-            return true
+        local pa = private_attrs()
+        if pa then
+            local role = pa:GetAttribute("Role_" .. tostring(plr.UserId))
+            if STAFF_ROLES[role] then
+                return true
+            end
         end
-        if plr:GetAttribute("FlyAllowed") == true then
+        local old = plr:GetAttribute("ControlPanelRole")
+        if STAFF_ROLES[old] then
             return true
         end
         return false
@@ -4699,27 +4799,33 @@ local function install_staff_detect()
         end
     end
 
-    local function watch(plr)
-        if not plr or plr == LP then
-            return
-        end
-        bind(plr:GetAttributeChangedSignal("ControlPanelRole"):Connect(function()
-            check_player(plr)
-        end))
-        bind(plr:GetAttributeChangedSignal("FlyAllowed"):Connect(function()
-            check_player(plr)
-        end))
-    end
-
     bind(Players.PlayerAdded:Connect(function(plr)
-        watch(plr)
         task.defer(check_player, plr)
     end))
-    local list = Players:GetPlayers()
-    for i = 1, #list do
-        watch(list[i])
+    do
+        local list = Players:GetPlayers()
+        for i = 1, #list do
+            task.defer(check_player, list[i])
+        end
     end
-    task.defer(scan)
+    task.spawn(function()
+        local pg = LP:WaitForChild("PlayerGui", 20)
+        local pa = pg and pg:WaitForChild("PrivateAttributes", 20)
+        if not (pa and F.staff_running) then
+            return
+        end
+        bind(pa.AttributeChanged:Connect(function(attr)
+            if type(attr) ~= "string" or string.sub(attr, 1, 5) ~= "Role_" then
+                return
+            end
+            local uid = tonumber(string.sub(attr, 6))
+            local plr = uid and Players:GetPlayerByUserId(uid)
+            if plr then
+                check_player(plr)
+            end
+        end))
+        scan()
+    end)
     task.spawn(function()
         while F.staff_running do
             task.wait(1.5)
