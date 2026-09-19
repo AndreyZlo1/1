@@ -228,7 +228,9 @@ local aimTrackOf = {}
 local aimWatchChar = {}
 local saTgt = nil
 local origFireVolley = nil
+local fireVolleyKey = nil
 local origSendClaim = nil
+local extraHooksInstalled = false
 local extraHooks = {}
 local ClientFire = nil
 local HitReporter = nil
@@ -3013,12 +3015,18 @@ function F.paint_overlay()
     end
 end
 
+local namedModCache = {}
 local function find_named_mod(root, name)
     if not root then
         return nil
     end
+    local hit = namedModCache[name]
+    if hit and hit.Parent then
+        return hit
+    end
     local d = root:FindFirstChild(name)
     if d and d:IsA("ModuleScript") then
+        namedModCache[name] = d
         return d
     end
     local ok, desc = pcall(root.GetDescendants, root)
@@ -3028,10 +3036,24 @@ local function find_named_mod(root, name)
     for i = 1, #desc do
         local x = desc[i]
         if x.Name == name and x:IsA("ModuleScript") then
+            namedModCache[name] = x
             return x
         end
     end
     return nil
+end
+
+local function resolve_volley(mod)
+    if type(mod) ~= "table" then
+        return nil, nil
+    end
+    if type(mod.fireVolley) == "function" then
+        return mod.fireVolley, "fireVolley"
+    end
+    if type(mod.tRa_ASYc_V) == "function" then
+        return mod.tRa_ASYc_V, "tRa_ASYc_V"
+    end
+    return nil, nil
 end
 
 local function load_game_modules()
@@ -3042,7 +3064,7 @@ local function load_game_modules()
         hrInst = find_named_mod(ps, "HitReporter")
         if cfInst then
             local ok, mod = pcall(require, cfInst)
-            if ok and type(mod) == "table" and type(mod.fireVolley) == "function" then
+            if ok and resolve_volley(mod) then
                 ClientFire = mod
                 break
             end
@@ -3071,11 +3093,15 @@ local function load_game_modules()
 end
 
 local function install_hooks()
-    if not ClientFire or type(ClientFire.fireVolley) ~= "function" then
-        return false
-    end
+    local volleyFn, volleyKey = resolve_volley(ClientFire)
     if origFireVolley then
         return true
+    end
+    if not volleyFn then
+        if not extraHooksInstalled then
+            install_extra_hooks()
+        end
+        return false
     end
     if HitReporter and type(HitReporter.sendClaim) == "function" then
         local claimHook = newcclosure(function(seed, impact)
@@ -3303,11 +3329,12 @@ local function install_hooks()
         return results
     end, "fireVolley")
     setstackhidden(hook, true)
+    fireVolleyKey = volleyKey
     if hookfunction then
-        origFireVolley = hookfunction(ClientFire.fireVolley, hook)
+        origFireVolley = hookfunction(volleyFn, hook)
     else
-        origFireVolley = ClientFire.fireVolley
-        ClientFire.fireVolley = hook
+        origFireVolley = volleyFn
+        ClientFire[volleyKey] = hook
     end
     install_extra_hooks()
     local function mark_shot(plr)
@@ -3374,10 +3401,14 @@ local function hook_fn(obj, key, wrapperName, wrap)
 end
 
 function install_extra_hooks()
+    if extraHooksInstalled then
+        return
+    end
     local client = ReplicatedStorage:FindFirstChild("Client")
     if not client then
         return
     end
+    extraHooksInstalled = true
     local tools = client:FindFirstChild("Tools")
     local weapon = tools and tools:FindFirstChild("Weapon")
     if weapon then
@@ -3399,13 +3430,17 @@ function install_extra_hooks()
                 end)
             end
             local ok, recoil = pcall(require, controllers:FindFirstChild("RecoilController"))
-            if ok and recoil and recoil.applyRecoil then
-                hook_fn(recoil, "applyRecoil", "noRecoil", function(orig, ...)
-                    if CFG.NoRecoil then
-                        return
-                    end
-                    return orig(...)
-                end)
+            if ok and type(recoil) == "table" then
+                local recoilKey = type(recoil.applyRecoil) == "function" and "applyRecoil"
+                    or (type(recoil.ibjoVLFtNP) == "function" and "ibjoVLFtNP")
+                if recoilKey then
+                    hook_fn(recoil, recoilKey, "noRecoil", function(orig, ...)
+                        if CFG.NoRecoil then
+                            return
+                        end
+                        return orig(...)
+                    end)
+                end
             end
             local bipodFolder = controllers:FindFirstChild("bipod")
             local bipodMod = bipodFolder and bipodFolder:FindFirstChild("BipodController")
@@ -3931,7 +3966,43 @@ function install_extra_hooks()
             end))
         end
 
+        local lockHooked = false
+        local function hook_lock_blocked()
+            if lockHooked or not (filtergc and hookfunction) then
+                return
+            end
+            lockHooked = true
+            local locks = filtergc("function", {
+                Constants = { "FRIENDS", "SQUAD" },
+                IgnoreExecutor = true,
+            }, true)
+            for _, lockFn in { locks } do
+                if type(lockFn) == "table" then
+                    for _, fn in lockFn do
+                        if type(fn) == "function" then
+                            lockFn = fn
+                            break
+                        end
+                    end
+                end
+                if type(lockFn) == "function" then
+                    local old
+                    old = hookfunction(lockFn, newcclosure(function(...)
+                        if CFG.VehicleStealer then
+                            return false
+                        end
+                        return old(...)
+                    end, "isLockBlocked"))
+                    extraHooks[#extraHooks + 1] = { kind = "fn", target = lockFn }
+                end
+            end
+        end
+
         local function scan_vehicle_prompts()
+            if not CFG.VehicleStealer then
+                return
+            end
+            hook_lock_blocked()
             local tagged = CS:GetTagged("VehiclePrompt")
             for i = 1, #tagged do
                 watch_prompt(tagged[i])
@@ -3959,34 +4030,7 @@ function install_extra_hooks()
             end
         end
 
-        if filtergc and hookfunction then
-            local locks = filtergc("function", {
-                Constants = { "FRIENDS", "SQUAD" },
-                IgnoreExecutor = true,
-            }, true)
-            for _, lockFn in { locks } do
-                if type(lockFn) == "table" then
-                    for _, fn in lockFn do
-                        if type(fn) == "function" then
-                            lockFn = fn
-                            break
-                        end
-                    end
-                end
-                if type(lockFn) == "function" then
-                    local old
-                    old = hookfunction(lockFn, newcclosure(function(...)
-                        if CFG.VehicleStealer then
-                            return false
-                        end
-                        return old(...)
-                    end, "isLockBlocked"))
-                    extraHooks[#extraHooks + 1] = { kind = "fn", target = lockFn }
-                end
-            end
-        end
-
-        scan_vehicle_prompts()
+        task.defer(scan_vehicle_prompts)
         bind(CS:GetInstanceAddedSignal("VehiclePrompt"):Connect(watch_prompt))
         bind(CS:GetInstanceAddedSignal("FactoryVehicleSeat"):Connect(function(seat)
             if not CFG.VehicleStealer or not seat then
@@ -4132,12 +4176,14 @@ end
 
 local function restore_hooks()
     if origFireVolley and ClientFire then
+        local key = fireVolleyKey or "fireVolley"
         if restorefunction then
-            pcall(restorefunction, ClientFire.fireVolley)
+            pcall(restorefunction, ClientFire[key] or origFireVolley)
         else
-            ClientFire.fireVolley = origFireVolley
+            ClientFire[key] = origFireVolley
         end
         origFireVolley = nil
+        fireVolleyKey = nil
     end
     if origSendClaim and HitReporter then
         if restorefunction then
@@ -4163,7 +4209,6 @@ end
 
 local function install_movement()
     local collideSave = {}
-    local hookedHum = nil
 
     local function hum_hrp()
         local char = LP.Character
@@ -4691,6 +4736,7 @@ end)
 
 local espCursor = 0
 local lastPickAt = 0
+local espHidden = false
 
 bind(RunService.RenderStepped:Connect(function(dt)
     Cam = Workspace.CurrentCamera
@@ -4706,6 +4752,7 @@ bind(RunService.RenderStepped:Connect(function(dt)
     local muzzlePos = (mcf and mcf.Position) or Cam.CFrame.Position
     local origin = F.shot_origin(muzzlePos)
     if CFG.ESP then
+        espHidden = false
         F.sweep_esp_models()
         local n = rosterN
         if n > 0 then
@@ -4723,8 +4770,11 @@ bind(RunService.RenderStepped:Connect(function(dt)
             end
         end
     else
-        for _, o in espByModel do
-            F.hide_esp(o)
+        if not espHidden then
+            for _, o in espByModel do
+                F.hide_esp(o)
+            end
+            espHidden = true
         end
     end
 
